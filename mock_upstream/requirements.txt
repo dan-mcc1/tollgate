@@ -1,0 +1,3 @@
+# Keep in step with uv.lock. The mock image doesn't install the whole project.
+fastapi==0.141.1
+uvicorn==0.53.0

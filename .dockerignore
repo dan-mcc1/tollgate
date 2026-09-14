@@ -1,0 +1,9 @@
+venv/
+.venv/
+.env
+.git/
+.github/
+**/__pycache__/
+dashboards/
+bench/
+tests/
