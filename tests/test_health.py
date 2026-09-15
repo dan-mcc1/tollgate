@@ -15,7 +15,8 @@ async def test_livez_needs_no_dependencies() -> None:
         response = await client.get("/livez")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "alive"}
+    assert response.json()["status"] == "alive"
+    assert response.json()["version"]  # "dev" locally, the git SHA when deployed
 
 
 async def test_ready_when_database_and_upstream_are_reachable(gateway: httpx.AsyncClient) -> None:

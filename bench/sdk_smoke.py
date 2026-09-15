@@ -7,7 +7,7 @@ import sys
 
 from google import genai
 
-GATEWAY_URL = "http://localhost:8000"
+GATEWAY_URL = "https://tollgate.danmccabe.dev"
 MODEL = "gemini-3.7-flash"
 
 

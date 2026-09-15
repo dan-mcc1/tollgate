@@ -1,12 +1,17 @@
 name: CI
 
+# Runs on every pull request, and is called by the deploy workflow before anything ships,
+# so a commit that fails here can never reach AWS.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   check:
+    name: Lint, types, tests, audit
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -32,3 +37,18 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest
+
+      # ECR's image scan only covers OS packages. This covers the Python dependencies,
+      # exactly as pinned in uv.lock (with hashes), against the PyPI advisory database.
+      - name: Audit Python dependencies
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt -o requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt --disable-pip --progress-spinner off
+
+  image:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Catch a broken Dockerfile in the pull request, not during a deploy.
+      - run: docker build --pull --provenance=false --sbom=false -t tollgate:ci .

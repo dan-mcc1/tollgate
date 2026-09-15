@@ -8,6 +8,9 @@
 #      stack attaches permissions, next to the resources they apply to)
 #   4. ECR repository. Images are build artifacts like state: they must outlive the stack
 #      that runs them, so a destroyed stack can be rebuilt from the last image pushed.
+#   5. Secrets Manager entries (containers only; values are set by hand with the CLI, so
+#      they never appear in code or Terraform state). A deleted secret's name stays
+#      reserved for up to 30 days, so these can't live in a stack that's destroyed often.
 
 data "aws_caller_identity" "current" {}
 
@@ -96,6 +99,21 @@ resource "aws_route53_zone" "tollgate" {
   }
 }
 
+# Resolvers cache "this name doesn't exist" for the SOA record's TTL or its last field,
+# whichever is smaller. Route 53 defaults both high (900 s and 86400 s), so a lookup made
+# while the main stack is destroyed keeps failing for 15 minutes after it's rebuilt. The
+# main stack is destroyed and rebuilt routinely, so keep that window to a minute.
+resource "aws_route53_record" "soa" {
+  zone_id         = aws_route53_zone.tollgate.zone_id
+  name            = aws_route53_zone.tollgate.name
+  type            = "SOA"
+  ttl             = 60
+  allow_overwrite = true # every zone is born with an SOA record; take over the existing one
+
+  # primary server, admin contact, serial, refresh, retry, expire, negative-cache TTL
+  records = ["${aws_route53_zone.tollgate.primary_name_server}. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 60"]
+}
+
 # -----------------------------------------------------------------------------------------
 # 3. GitHub Actions -> AWS, with no stored keys
 # -----------------------------------------------------------------------------------------
@@ -179,4 +197,26 @@ resource "aws_ecr_lifecycle_policy" "tollgate" {
       },
     ]
   })
+}
+
+# -----------------------------------------------------------------------------------------
+# 5. Secrets (values set outside Terraform)
+# -----------------------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "database_url" {
+  name        = "tollgate/database-url"
+  description = "Neon connection string, postgresql+asyncpg://...?ssl=require"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_secretsmanager_secret" "gemini_api_key" {
+  name        = "tollgate/gemini-api-key"
+  description = "Provider credential. Only the gateway ever reads it."
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }

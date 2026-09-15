@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tollgate.config import Settings
+from tollgate.config import Settings, get_settings
 
 logger = logging.getLogger("tollgate.health")
 router = APIRouter()
@@ -70,7 +70,7 @@ async def check_database(
 
 @router.get("/livez")
 async def livez() -> dict[str, str]:
-    return {"status": "alive"}
+    return {"status": "alive", "version": get_settings().app_version}
 
 
 @router.get("/readyz")

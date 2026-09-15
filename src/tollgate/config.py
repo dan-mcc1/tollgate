@@ -7,6 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # The git commit this process was built from. Set by the deploy pipeline, reported by
+    # /livez, so a smoke test can tell the new version from an old task still draining.
+    app_version: str = "dev"
+
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/example_db"
     upstream_base_url: str = "http://localhost:8001"
     # SecretStr prints as '**********', so the provider key can't leak through a log or repr.

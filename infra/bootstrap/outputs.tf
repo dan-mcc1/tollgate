@@ -17,6 +17,11 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.tollgate.repository_url
 }
 
+output "secret_names" {
+  description = "Set each value once with `aws secretsmanager put-secret-value`."
+  value       = [aws_secretsmanager_secret.database_url.name, aws_secretsmanager_secret.gemini_api_key.name]
+}
+
 output "github_deploy_role_arn" {
   description = "Used by the deploy workflow's configure-aws-credentials step."
   value       = aws_iam_role.github_deploy.arn

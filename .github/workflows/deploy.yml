@@ -1,0 +1,229 @@
+name: Deploy
+
+# Every push to main (a merged pull request, or a direct push) goes through the full
+# checks, then ships. "Run workflow" in the Actions tab redeploys main by hand.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never run two deploys at once. A second merge waits for the first to finish
+# instead of cancelling it halfway through a rollout.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Not secrets: an ARN names a role, it doesn't grant access to it. Only a GitHub OIDC
+  # token from this repository's main branch can assume the role (see infra/bootstrap).
+  AWS_ROLE_ARN: arn:aws:iam::111311033994:role/tollgate-github-deploy
+  ECR_REPOSITORY: tollgate
+  ECS_CLUSTER: tollgate
+  ECS_SERVICE: tollgate
+  TASK_FAMILY: tollgate
+  CONTAINER_NAME: app
+  PUBLIC_URL: https://tollgate.danmccabe.dev
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build and deploy
+    needs: checks # a failing check stops the pipeline here, before anything is built or pushed
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # lets this job request a GitHub OIDC token to exchange for AWS credentials
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # --- 1. Credentials --------------------------------------------------------------------
+
+      - name: Assume the deploy role (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: deploy-${{ github.run_id }}
+
+      # --- 2. Build and push -----------------------------------------------------------------
+
+      - name: Build and push the image
+        id: image
+        run: |
+          registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+
+          tag="$GITHUB_SHA"
+          image="$registry/$ECR_REPOSITORY:$tag"
+          # No attestations: one push, one plain image, so the tag points straight at it.
+          docker build --pull --provenance=false --sbom=false -t "$image" .
+          docker push "$image"
+
+          # Deploy by digest, so the task definition names exact bytes, not a tag.
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$tag" --query 'imageDetails[0].imageDigest' --output text)
+          echo "ref=$registry/$ECR_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+      # --- 3. New task definition revision ---------------------------------------------------
+
+      - name: Register a task definition for this image
+        id: taskdef
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          # Remember what's running now. Rolling back means pointing the service at it again.
+          previous=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
+          # Start from the family's latest revision, so settings changed in Terraform carry
+          # over. Swap the image and version, strip the fields AWS sets itself, register.
+          aws ecs describe-task-definition --task-definition "$TASK_FAMILY" --query taskDefinition > current.json
+          jq --arg image "$IMAGE_REF" --arg version "$GITHUB_SHA" --arg name "$CONTAINER_NAME" '
+            .containerDefinitions |= map(
+              if .name == $name then
+                .image = $image
+                | .environment = ([.environment[] | select(.name != "APP_VERSION")] + [{name: "APP_VERSION", value: $version}])
+              else . end)
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities,
+                  .registeredAt, .registeredBy, .deregisteredAt)
+          ' current.json > new.json
+
+          new=$(aws ecs register-task-definition --cli-input-json file://new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "Previous: $previous"
+          echo "New:      $new"
+
+      # --- 4. Migrations ---------------------------------------------------------------------
+
+      - name: Run database migrations
+        env:
+          TASK_DEF: ${{ steps.taskdef.outputs.new }}
+        run: |
+          # A one-off task from the NEW image, in the same subnets and security group as the
+          # service, running `alembic upgrade head` instead of the web server.
+          network=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].networkConfiguration' --output json)
+          overrides=$(jq -nc --arg name "$CONTAINER_NAME" \
+            '{containerOverrides: [{name: $name, command: ["alembic", "upgrade", "head"]}]}')
+
+          task=$(aws ecs run-task --cluster "$ECS_CLUSTER" --launch-type FARGATE \
+            --task-definition "$TASK_DEF" --network-configuration "$network" --overrides "$overrides" \
+            --started-by "gha-migrate-${GITHUB_RUN_ID}" --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $task"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task"
+
+          exit_code=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "--- migration output ---"
+          aws logs get-log-events --log-group-name "/ecs/$TASK_FAMILY" \
+            --log-stream-name "app/$CONTAINER_NAME/${task##*/}" --query 'events[].message' --output text || true
+          if [ "$exit_code" != "0" ]; then
+            reason=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task" --query 'tasks[0].stoppedReason' --output text)
+            echo "::error::Migrations failed (exit code: $exit_code, $reason). Nothing was deployed."
+            exit 1
+          fi
+
+      # --- 5. Roll out -----------------------------------------------------------------------
+
+      - name: Deploy and wait for the service to stabilise
+        env:
+          TASK_DEF: ${{ steps.taskdef.outputs.new }}
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$TASK_DEF" --query 'service.deployments[0].id' --output text
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+          # "Stable" is also what ECS reports after its circuit breaker has rolled a failed
+          # deploy back. Check that the new revision is the one actually running.
+          running=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].deployments[?status==`PRIMARY`] | [0].taskDefinition' --output text)
+          echo "Running: $running"
+          if [ "$running" != "$TASK_DEF" ]; then
+            echo "::error::The new tasks never became healthy; ECS rolled back to the previous version."
+            aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query 'services[0].events[0:8].message' --output text
+            exit 1
+          fi
+
+      # --- 6. Smoke test ---------------------------------------------------------------------
+      # Load balancer health checks prove the new version starts. The smoke test checks it's
+      # the right version and still behaves correctly, from the outside, over the real URL.
+
+      - name: Smoke test the live URL
+        id: smoke
+        run: |
+          set -u
+          fail() { echo "::error::Smoke test failed: $1"; exit 1; }
+
+          # 1. The new version is the one answering (retry: old tasks may still be draining).
+          for attempt in $(seq 1 12); do
+            version=$(curl -sS -m 10 "$PUBLIC_URL/livez" | jq -r '.version // empty' || true)
+            [ "$version" = "$GITHUB_SHA" ] && break
+            echo "Attempt $attempt: live version is '${version:-none}', waiting for $GITHUB_SHA"
+            sleep 5
+          done
+          [ "$version" = "$GITHUB_SHA" ] || fail "live version is '${version:-none}', expected $GITHUB_SHA"
+
+          # 2. Ready: database and upstream reachable from the task.
+          ready=$(curl -sS -m 10 -o ready.json -w '%{http_code}' "$PUBLIC_URL/readyz" || true)
+          [ "$ready" = "200" ] || fail "/readyz returned $ready: $(cat ready.json 2>/dev/null)"
+
+          # 3. Authentication still works and errors keep the gateway's shape. Costs nothing:
+          #    the request is rejected before it could reach Gemini.
+          status=$(curl -sS -m 10 -o unauth.json -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{"contents":[]}' \
+            "$PUBLIC_URL/v1beta/models/gemini-3.7-flash:generateContent" || true)
+          [ "$status" = "401" ] || fail "request without a key returned $status, expected 401"
+          jq -e '.error.source == "gateway" and .error.code == "missing_api_key"' unauth.json > /dev/null \
+            || fail "unexpected 401 body: $(cat unauth.json)"
+
+          echo "Smoke test passed: $GITHUB_SHA is live and healthy."
+
+      # --- 7. Roll back on smoke test failure -----------------------------------------------
+
+      - name: Roll back to the previous version
+        if: failure() && steps.smoke.outcome == 'failure'
+        env:
+          PREVIOUS: ${{ steps.taskdef.outputs.previous }}
+        run: |
+          echo "::warning::Rolling back to $PREVIOUS"
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$PREVIOUS" --query 'service.deployments[0].id' --output text
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          echo "Rolled back. $(curl -sS -m 10 "$PUBLIC_URL/livez")"
+
+      # --- 8. Record merge-to-live time -----------------------------------------------------
+
+      - name: Summary
+        if: success()
+        env:
+          COMMITTED_AT: ${{ github.event.head_commit.timestamp }}
+        run: |
+          # For a push, the head commit's timestamp is when it landed on main (for a merged
+          # pull request, the merge commit). A manual run has no push, so it's skipped.
+          if [ -n "${COMMITTED_AT:-}" ]; then
+            seconds=$(( $(date +%s) - $(date -d "$COMMITTED_AT" +%s) ))
+            live="$((seconds / 60))m $((seconds % 60))s"
+          else
+            live="n/a (manual run)"
+          fi
+          {
+            echo "### Deployed \`${GITHUB_SHA:0:7}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| URL | $PUBLIC_URL |"
+            echo "| Task definition | \`${{ steps.taskdef.outputs.new }}\` |"
+            echo "| Merge to live | **$live** |"
+          } >> "$GITHUB_STEP_SUMMARY"
