@@ -75,7 +75,7 @@ async def require_tenant(request: Request) -> TenantContext:
     """FastAPI dependency: authenticate the caller or raise a 401."""
     key = extract_key(request)
     if not key:
-        raise GatewayError(401, "missing_api_key", "Send a Tollgate key in x-goog-api-key.")
+        raise GatewayError(401, "no_key_sent", "Send a Tollgate key in x-goog-api-key.")
 
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     async with sessionmaker() as session:

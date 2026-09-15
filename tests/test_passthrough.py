@@ -23,7 +23,7 @@ def auth(key: str) -> dict[str, str]:
 @pytest.mark.parametrize(
     ("headers", "code"),
     [
-        ({}, "missing_api_key"),
+        ({}, "no_key_sent"),
         (auth("tg_not_a_real_key"), "invalid_api_key"),
     ],
 )

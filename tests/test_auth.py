@@ -28,6 +28,6 @@ async def test_missing_key_returns_gateway_401() -> None:
     assert response.status_code == 401
     assert response.json()["error"] == {
         "source": "gateway",
-        "code": "missing_api_key",
+        "code": "no_key_sent",
         "message": "Send a Tollgate key in x-goog-api-key.",
     }
