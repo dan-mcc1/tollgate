@@ -36,8 +36,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---------------------------------------------------------------------------------------
 FROM python:3.13-slim
 
-# A fixed, unprivileged user. If the app is compromised, the attacker isn't root.
-RUN groupadd --system --gid 10001 app \
+# Apply Debian security updates released since the base image was last rebuilt (the
+# official image lags behind by days to weeks), then drop the package index to keep the
+# layer small. Then a fixed, unprivileged user: if the app is compromised, it isn't root.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
 WORKDIR /app
