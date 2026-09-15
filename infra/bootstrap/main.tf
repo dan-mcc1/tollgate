@@ -11,6 +11,8 @@
 #   5. Secrets Manager entries (containers only; values are set by hand with the CLI, so
 #      they never appear in code or Terraform state). A deleted secret's name stays
 #      reserved for up to 30 days, so these can't live in a stack that's destroyed often.
+#   6. The billing alarm. It belongs here so it keeps watching while the main stack is down:
+#      forgetting to destroy is exactly when it's needed.
 
 data "aws_caller_identity" "current" {}
 
@@ -218,5 +220,48 @@ resource "aws_secretsmanager_secret" "gemini_api_key" {
 
   lifecycle {
     prevent_destroy = true
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 6. Billing alarm
+# -----------------------------------------------------------------------------------------
+
+# An AWS Budget rather than a CloudWatch billing alarm: no SNS topic to confirm, forecast
+# alerts built in, and the first two budgets in an account are free. AWS refreshes the
+# numbers a few times a day, so alerts lag spend by hours, not seconds.
+resource "aws_budgets_budget" "monthly" {
+  name         = "tollgate-monthly"
+  budget_type  = "COST"
+  limit_amount = tostring(var.monthly_budget_usd)
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  # Early warning: half the budget already spent.
+  notification {
+    notification_type          = "ACTUAL"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 50
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  # On current pace, the month will end over budget. Usually the first sign the main
+  # stack was left running.
+  notification {
+    notification_type          = "FORECASTED"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = [var.alert_email]
+  }
+
+  # Over budget.
+  notification {
+    notification_type          = "ACTUAL"
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    subscriber_email_addresses = [var.alert_email]
   }
 }

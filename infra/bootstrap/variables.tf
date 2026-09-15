@@ -21,6 +21,17 @@ variable "github_subject_prefix" {
   default     = "repo:dan-mcc1@117699367/tollgate@1370587408"
 }
 
+variable "alert_email" {
+  description = "Where budget alerts go. Set in terraform.tfvars (gitignored), not in code."
+  type        = string
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly AWS spend at which alerts fire."
+  type        = number
+  default     = 25
+}
+
 variable "deploy_branch" {
   description = "The only branch whose workflows may assume the deploy role."
   type        = string

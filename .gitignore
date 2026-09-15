@@ -25,6 +25,8 @@ htmlcov/
 *.tfstate
 *.tfstate.*
 *.tfplan
+# Per-person values (like an alert email) stay out of a public repo; see *.tfvars.example.
+terraform.tfvars
 crash.log
 
 # Editors / OS
