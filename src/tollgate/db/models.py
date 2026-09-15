@@ -47,3 +47,29 @@ class ApiKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped[Tenant] = relationship(back_populates="api_keys")
+
+
+class UsageRecord(Base):
+    """One row per authenticated request that the gateway tried to send upstream.
+
+    Rows are never updated or deleted. Token counts are NULL when the upstream never
+    reported them (a timeout, an upstream error), which is different from zero.
+    """
+
+    __tablename__ = "usage_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # No ondelete cascade: a tenant with usage history can't be deleted, only deactivated.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"))
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    model: Mapped[str] = mapped_column(String(200))
+    method: Mapped[str] = mapped_column(String(64))
+    input_tokens: Mapped[int | None]
+    output_tokens: Mapped[int | None]
+    thoughts_tokens: Mapped[int | None]
+    upstream_latency_ms: Mapped[int | None]
+    upstream_attempts: Mapped[int] = mapped_column(default=0)
+    status_code: Mapped[int]  # the status Tollgate returned to the caller
+    error_source: Mapped[str | None] = mapped_column(String(16))  # "gateway" or "upstream"
+    error_code: Mapped[str | None] = mapped_column(String(64))
