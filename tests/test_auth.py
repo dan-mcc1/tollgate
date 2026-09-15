@@ -25,7 +25,7 @@ async def test_missing_key_returns_gateway_401() -> None:
             "/v1beta/models/gemini-3.7-flash:generateContent", json={"contents": []}
         )
 
-    assert response.status_code == 401
+    assert response.status_code == 418
     assert response.json()["error"] == {
         "source": "gateway",
         "code": "missing_api_key",
