@@ -141,7 +141,7 @@ resource "aws_iam_role" "github_deploy" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           # Exact match: no wildcards, so forks, other branches and pull requests can't deploy.
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/heads/${var.deploy_branch}"
+          "token.actions.githubusercontent.com:sub" = "${var.github_subject_prefix}:ref:refs/heads/${var.deploy_branch}"
         }
       }
     }]
