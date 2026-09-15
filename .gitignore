@@ -19,6 +19,14 @@ build/
 .coverage
 htmlcov/
 
+# Terraform: provider downloads and local state never get committed.
+# (.terraform.lock.hcl DOES get committed: it pins provider versions, like uv.lock.)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
 # Editors / OS
 .vscode/
 .idea/

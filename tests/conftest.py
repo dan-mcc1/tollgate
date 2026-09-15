@@ -26,6 +26,7 @@ from mock_upstream import main as mock
 from tollgate.auth import generate_key
 from tollgate.config import Settings
 from tollgate.db.models import ApiKey, Tenant, UsageRecord
+from tollgate.health import UpstreamProbe
 from tollgate.main import app
 from tollgate.proxy.passthrough import create_upstream_client
 
@@ -140,6 +141,7 @@ async def gateway(
     app.state.settings = settings
     app.state.sessionmaker = sessionmaker
     app.state.http_client = upstream
+    app.state.upstream_probe = UpstreamProbe(cache_s=0)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://tollgate"
     ) as client:

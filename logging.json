@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "json": { "()": "tollgate.logs.JsonFormatter" }
+  },
+  "handlers": {
+    "stdout": {
+      "class": "logging.StreamHandler",
+      "formatter": "json",
+      "stream": "ext://sys.stdout"
+    }
+  },
+  "loggers": {
+    "uvicorn": { "handlers": ["stdout"], "level": "INFO", "propagate": false },
+    "uvicorn.access": { "handlers": [], "level": "WARNING", "propagate": false },
+    "tollgate": { "handlers": ["stdout"], "level": "INFO", "propagate": false }
+  },
+  "root": { "handlers": ["stdout"], "level": "WARNING" }
+}

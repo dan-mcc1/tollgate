@@ -1,9 +1,15 @@
-venv/
-.venv/
+# Keep the build context small and secrets out of every image.
 .env
+.env.*
 .git/
 .github/
+venv/
+.venv/
 **/__pycache__/
-dashboards/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 bench/
+dashboards/
+infra/
 tests/

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     upstream_backoff_base_s: float = 0.25
     upstream_backoff_max_s: float = 4.0
 
+    # Readiness checks. Keep the timeouts below the load balancer's health check timeout.
+    readiness_db_timeout_s: float = 2.0
+    readiness_upstream_timeout_s: float = 3.0
+    readiness_upstream_cache_s: float = 30.0
+
 
 @lru_cache
 def get_settings() -> Settings:

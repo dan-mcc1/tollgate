@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.db.models import ApiKey, Tenant
 from tollgate.errors import GatewayError
+from tollgate.logs import tenant_var
 
 KEY_PREFIX = "tg_"
 STORED_PREFIX_LENGTH = 12  # enough to recognise a key in logs, far too little to use it
@@ -83,4 +84,5 @@ async def require_tenant(request: Request) -> TenantContext:
     if tenant is None:
         # Unknown and revoked get the same answer, so a caller can't probe which keys once existed.
         raise GatewayError(401, "invalid_api_key", "API key is unknown or revoked.")
+    tenant_var.set(tenant.tenant_name)  # tags this request's log lines with the tenant
     return tenant

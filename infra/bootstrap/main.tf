@@ -1,0 +1,182 @@
+# Bootstrap: the few things that must exist before the main stack can run, and that
+# must survive every `terraform destroy` of it. Applied by hand, rarely.
+#
+#   1. S3 bucket holding Terraform state for both stacks
+#   2. Route 53 zone for tollgate.danmccabe.dev (its name servers are entered in Porkbun
+#      once; recreating the zone would change them)
+#   3. GitHub OIDC trust + the role GitHub Actions deploys with (trust only; the main
+#      stack attaches permissions, next to the resources they apply to)
+#   4. ECR repository. Images are build artifacts like state: they must outlive the stack
+#      that runs them, so a destroyed stack can be rebuilt from the last image pushed.
+
+data "aws_caller_identity" "current" {}
+
+locals {
+  account_id   = data.aws_caller_identity.current.account_id
+  state_bucket = "tollgate-tfstate-${local.account_id}" # bucket names are global; the account id makes it unique
+}
+
+# -----------------------------------------------------------------------------------------
+# 1. Terraform state bucket
+# -----------------------------------------------------------------------------------------
+
+resource "aws_s3_bucket" "state" {
+  bucket = local.state_bucket
+
+  lifecycle {
+    prevent_destroy = true # losing state means Terraform forgets everything it manages
+  }
+}
+
+# Every write keeps the previous version, so a corrupted or bad state can be rolled back.
+resource "aws_s3_bucket_versioning" "state" {
+  bucket = aws_s3_bucket.state.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# State can contain sensitive values. It must never be publicly readable.
+resource "aws_s3_bucket_public_access_block" "state" {
+  bucket                  = aws_s3_bucket.state.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Refuse any request that isn't over HTTPS.
+resource "aws_s3_bucket_policy" "state" {
+  bucket = aws_s3_bucket.state.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource  = [aws_s3_bucket.state.arn, "${aws_s3_bucket.state.arn}/*"]
+      Condition = { Bool = { "aws:SecureTransport" = "false" } }
+    }]
+  })
+}
+
+# Old state versions are only useful for a while. Expire them so the bucket stays tiny.
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "expire-old-state-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 2. DNS zone for the delegated subdomain
+# -----------------------------------------------------------------------------------------
+
+resource "aws_route53_zone" "tollgate" {
+  name    = var.domain
+  comment = "Delegated from Porkbun by NS records on danmccabe.dev"
+
+  lifecycle {
+    prevent_destroy = true # a new zone gets new name servers, which means editing Porkbun again
+  }
+}
+
+# -----------------------------------------------------------------------------------------
+# 3. GitHub Actions -> AWS, with no stored keys
+# -----------------------------------------------------------------------------------------
+
+# Tells IAM to trust tokens signed by GitHub's OIDC issuer. One per account.
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+}
+
+# The role a deploy workflow becomes. The trust policy is the security boundary: only a
+# token from this repository, on this branch, for AWS, can assume it.
+resource "aws_iam_role" "github_deploy" {
+  name                 = "tollgate-github-deploy"
+  description          = "Assumed by GitHub Actions on ${var.github_repository}@${var.deploy_branch}"
+  max_session_duration = 3600
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          # Exact match: no wildcards, so forks, other branches and pull requests can't deploy.
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/heads/${var.deploy_branch}"
+        }
+      }
+    }]
+  })
+}
+
+# -----------------------------------------------------------------------------------------
+# 4. Container registry
+# -----------------------------------------------------------------------------------------
+
+resource "aws_ecr_repository" "tollgate" {
+  name = "tollgate"
+
+  # Images are tagged with the git commit SHA. Immutable means a tag, once pushed, always
+  # points at the same image: "commit abc123 is running" can never quietly become false.
+  image_tag_mutability = "IMMUTABLE"
+
+  # Free basic scan for known CVEs in OS packages on every push.
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Storage is billed per GB. Keep enough history to roll back, drop the rest.
+resource "aws_ecr_lifecycle_policy" "tollgate" {
+  repository = aws_ecr_repository.tollgate.name
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Delete untagged images (left behind by failed or replaced pushes)"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep the 30 most recent images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 30
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+}
