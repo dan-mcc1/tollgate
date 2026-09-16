@@ -12,6 +12,7 @@ from tollgate.health import UpstreamProbe
 from tollgate.health import router as health_router
 from tollgate.logs import RequestContextMiddleware
 from tollgate.proxy.passthrough import create_upstream_client, proxy_generate_content
+from tollgate.proxy.streaming import proxy_stream_generate_content
 
 
 @asynccontextmanager
@@ -49,7 +50,8 @@ async def model_method(
     tenant: Annotated[TenantContext, Depends(require_tenant)],
 ) -> Response:
     model, _, method = model_method.partition(":")
-    if method != "generateContent":
-        # streamGenerateContent arrives in phase 3.
-        raise GatewayError(501, "unsupported_method", f"'{method}' is not supported yet.")
-    return await proxy_generate_content(request, tenant, model, method)
+    if method == "generateContent":
+        return await proxy_generate_content(request, tenant, model, method)
+    if method == "streamGenerateContent":
+        return await proxy_stream_generate_content(request, tenant, model, method)
+    raise GatewayError(501, "unsupported_method", f"'{method}' is not supported yet.")

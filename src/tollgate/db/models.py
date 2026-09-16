@@ -69,7 +69,14 @@ class UsageRecord(Base):
     output_tokens: Mapped[int | None]
     thoughts_tokens: Mapped[int | None]
     upstream_latency_ms: Mapped[int | None]
+    # Time to the first byte from the upstream. On a stream that's the first token, which
+    # is what a user actually waits for; the rest arrives while they read.
+    upstream_ttfb_ms: Mapped[int | None]
     upstream_attempts: Mapped[int] = mapped_column(default=0)
     status_code: Mapped[int]  # the status Tollgate returned to the caller
     error_source: Mapped[str | None] = mapped_column(String(16))  # "gateway" or "upstream"
     error_code: Mapped[str | None] = mapped_column(String(64))
+    streamed: Mapped[bool] = mapped_column(default=False, server_default="false")
+    # The caller hung up mid-stream. The tokens were still generated and still cost money,
+    # so the row exists and counts what the upstream had reported by then.
+    client_disconnected: Mapped[bool] = mapped_column(default=False, server_default="false")

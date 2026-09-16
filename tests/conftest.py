@@ -9,18 +9,21 @@ httpx.MockTransport), so no test touches the network.
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
+import uvicorn
 from alembic import command
 from alembic.config import Config
 from pydantic import SecretStr
 from sqlalchemy import make_url, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
 
 from mock_upstream import main as mock
 from tollgate.auth import generate_key
@@ -116,9 +119,38 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def upstream_transport() -> httpx.AsyncBaseTransport:
-    """The default upstream: the mock Gemini app, in-process. Override per test."""
+def upstream_transport() -> httpx.AsyncBaseTransport | None:
+    """The default upstream: the mock Gemini app, in-process. Override per test.
+
+    None means "use the network", which with a loopback base URL reaches a local server.
+    """
     return httpx.ASGITransport(app=mock.app)
+
+
+@asynccontextmanager
+async def serve(application: ASGIApp) -> AsyncIterator[str]:
+    """Run an ASGI app on a loopback port for the duration of the block; yield its URL."""
+    config = uvicorn.Config(
+        application, host="127.0.0.1", port=0, lifespan="off", log_level="warning", access_log=False
+    )
+    server = uvicorn.Server(config)
+    serving = asyncio.create_task(server.serve())
+    try:
+        # Port 0 means the OS picks one, so wait until the server is bound before reading
+        # it back. Polling because uvicorn exposes a flag, not an awaitable event.
+        while not server.started:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        yield f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
+    finally:
+        server.should_exit = True
+        await serving
+
+
+@pytest.fixture
+async def live_upstream() -> AsyncIterator[str]:
+    """The mock Gemini API as a real server, for tests that need it to actually stream."""
+    async with serve(mock.app) as url:
+        yield url
 
 
 @pytest.fixture
@@ -145,6 +177,31 @@ async def gateway(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://tollgate"
     ) as client:
+        yield client
+    await upstream.aclose()
+
+
+@pytest.fixture
+async def live_gateway(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    upstream_transport: httpx.AsyncBaseTransport,
+    mock_upstream: None,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """The gateway behind a real HTTP server on a loopback port.
+
+    Streaming can't be tested through httpx's in-process ASGI transport: it collects the
+    whole response before handing it back, so events never arrive one at a time and a
+    client can never hang up mid-response. A real server on 127.0.0.1 behaves like the
+    load balancer will, and still touches no network.
+    """
+    upstream = create_upstream_client(settings, transport=upstream_transport)
+    app.state.settings = settings
+    app.state.sessionmaker = sessionmaker
+    app.state.http_client = upstream
+    app.state.upstream_probe = UpstreamProbe(cache_s=0)
+
+    async with serve(app) as url, httpx.AsyncClient(base_url=url, timeout=30) as client:
         yield client
     await upstream.aclose()
 

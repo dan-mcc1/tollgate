@@ -127,9 +127,10 @@ async def test_upstream_error_passes_through_in_google_shape(
     assert row.upstream_attempts == 1  # 400 is not retryable
 
 
-async def test_streaming_is_not_supported_yet(gateway: httpx.AsyncClient, keys: Keys) -> None:
+async def test_unknown_methods_are_refused(gateway: httpx.AsyncClient, keys: Keys) -> None:
+    # generateContent and streamGenerateContent are proxied; anything else isn't yet.
     response = await gateway.post(
-        f"/v1beta/models/{MODEL}:streamGenerateContent", json=BODY, headers=auth(keys.live)
+        f"/v1beta/models/{MODEL}:countTokens", json=BODY, headers=auth(keys.live)
     )
 
     assert response.status_code == 501

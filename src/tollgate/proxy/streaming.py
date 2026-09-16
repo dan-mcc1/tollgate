@@ -1,0 +1,197 @@
+"""Streaming passthrough: relay server-sent events without buffering the response.
+
+The shape of the problem, and what each piece of this file does about it:
+
+  * Events must reach the caller as they arrive. The relay yields each upstream chunk
+    straight onward, and never accumulates one.
+  * Token counts only appear inside the events, so the relay parses what passes through
+    (see sse.py) while keeping only a small parse buffer.
+  * Once the first event is sent the status code is spent: it's already a 200. A failure
+    after that is delivered as an error event inside the stream instead.
+  * The caller can hang up at any point. The upstream generated those tokens and will
+    bill for them, so the row is still written, flagged, with the counts known so far.
+  * A slow reader must not turn into unbounded memory. `yield` waits until the client
+    has taken the chunk, and only then is the next one read from the upstream, so a slow
+    reader slows the whole chain instead of filling a buffer.
+"""
+
+import asyncio
+import json
+import logging
+import time
+from collections.abc import AsyncIterator
+
+import httpx
+from fastapi import Request, Response
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from tollgate.auth import TenantContext
+from tollgate.config import Settings
+from tollgate.db.models import UsageRecord
+from tollgate.errors import GatewayError
+from tollgate.proxy.passthrough import (
+    DROPPED_RESPONSE_HEADERS,
+    RETRYABLE_STATUS,
+    backoff_delay,
+    build_upstream_request,
+    map_transport_error,
+)
+from tollgate.proxy.sse import StreamScanner
+from tollgate.usage import (
+    apply_usage_payload,
+    upstream_error_code,
+    write_usage,
+    write_usage_even_if_cancelled,
+)
+
+logger = logging.getLogger("tollgate.stream")
+
+STREAM_ERROR_MESSAGE = "The upstream stream ended early. The response is incomplete."
+
+
+def is_sse_request(request: Request) -> bool:
+    """Gemini streams SSE when asked with ?alt=sse, and a JSON array otherwise."""
+    return request.query_params.get("alt") == "sse"
+
+
+def error_event(sse: bool, code: str) -> bytes:
+    """An error delivered inside an already-started 200 response."""
+    payload = json.dumps(
+        {"error": {"source": "gateway", "code": code, "message": STREAM_ERROR_MESSAGE}}
+    )
+    # In array mode, close the array so the document is still parseable.
+    return f"data: {payload}\r\n\r\n".encode() if sse else f",{payload}]".encode()
+
+
+async def open_upstream_stream(
+    client: httpx.AsyncClient, settings: Settings, request: httpx.Request, record: UsageRecord
+) -> httpx.Response:
+    """Start the upstream stream, retrying only while nothing has been sent to the caller."""
+    for attempt in range(settings.upstream_max_retries + 1):
+        is_last = attempt == settings.upstream_max_retries
+        record.upstream_attempts = attempt + 1
+        try:
+            response = await client.send(request, stream=True)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            if is_last:
+                raise
+            delay = backoff_delay(settings, attempt, None)
+        else:
+            if response.status_code not in RETRYABLE_STATUS or is_last:
+                return response
+            delay = backoff_delay(settings, attempt, response.headers.get("retry-after"))
+            if delay > settings.upstream_backoff_max_s:
+                return response
+            await response.aclose()
+        await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def response_headers(upstream: httpx.Response) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in upstream.headers.items()
+        if name.lower() not in DROPPED_RESPONSE_HEADERS
+    }
+
+
+async def proxy_stream_generate_content(
+    request: Request, tenant: TenantContext, model: str, method: str
+) -> Response:
+    settings: Settings = request.app.state.settings
+    client: httpx.AsyncClient = request.app.state.http_client
+    sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
+
+    record = UsageRecord(
+        tenant_id=tenant.tenant_id,
+        api_key_id=tenant.api_key_id,
+        model=model,
+        method=method,
+        streamed=True,
+        upstream_attempts=0,
+        status_code=500,
+        error_source="gateway",
+        error_code="internal_error",
+    )
+    body = await request.body()
+    started = time.perf_counter()
+
+    def elapsed_ms() -> int:
+        return round((time.perf_counter() - started) * 1000)
+
+    # --- before the first byte: ordinary error handling still applies --------------------
+
+    upstream_request = build_upstream_request(
+        client, request, settings, f"/v1beta/models/{model}:{method}", body
+    )
+    try:
+        upstream = await open_upstream_stream(client, settings, upstream_request, record)
+    except httpx.HTTPError as exc:
+        error = map_transport_error(exc)
+        record.status_code, record.error_source, record.error_code = (
+            error.status_code,
+            "gateway",
+            error.code,
+        )
+        record.upstream_latency_ms = elapsed_ms()
+        await write_usage(sessionmaker, record)
+        raise error from exc
+
+    if not upstream.is_success:
+        payload = await upstream.aread()
+        await upstream.aclose()
+        record.status_code = upstream.status_code
+        record.error_source = "upstream"
+        record.error_code = upstream_error_code(payload) or f"http_{upstream.status_code}"
+        record.upstream_latency_ms = elapsed_ms()
+        await write_usage(sessionmaker, record)
+        return Response(
+            content=payload, status_code=upstream.status_code, headers=response_headers(upstream)
+        )
+
+    # --- from here the caller has a 200; problems travel inside the stream ---------------
+
+    sse = is_sse_request(request)
+    record.status_code = 200
+    record.error_source = record.error_code = None
+
+    async def relay() -> AsyncIterator[bytes]:
+        scanner = StreamScanner(sse=sse)
+        try:
+            async for chunk in upstream.aiter_raw():
+                if record.upstream_ttfb_ms is None:
+                    record.upstream_ttfb_ms = elapsed_ms()
+                for event in scanner.feed(chunk):
+                    apply_usage_payload(record, event)  # running totals; the last one wins
+                yield chunk  # waits for the caller to take it: backpressure, not buffering
+        except Exception as exc:
+            # A 200 and some events are already out, so the status code can't say this.
+            # Anything that goes wrong here (a dropped upstream connection, a bug of ours)
+            # is reported inside the stream instead. Cancellation is a BaseException and
+            # is handled separately below.
+            record.error_source, record.error_code = "gateway", "upstream_stream_failed"
+            logger.warning(
+                "upstream stream failed", extra={"fields": {"error": type(exc).__name__}}
+            )
+            yield error_event(sse, "upstream_stream_failed")
+        except (asyncio.CancelledError, GeneratorExit):
+            # The caller hung up. Those tokens were still generated and still billed.
+            record.client_disconnected = True
+            record.error_source, record.error_code = "gateway", "client_disconnected"
+            raise
+        finally:
+            record.upstream_latency_ms = elapsed_ms()
+            await upstream.aclose()  # stop pulling from the provider immediately
+            await write_usage_even_if_cancelled(sessionmaker, record)
+
+    return StreamingResponse(
+        relay(),
+        status_code=200,
+        headers=response_headers(upstream),
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+def unsupported(method: str) -> GatewayError:
+    return GatewayError(501, "unsupported_method", f"'{method}' is not supported yet.")
