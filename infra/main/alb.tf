@@ -8,9 +8,12 @@ resource "aws_lb" "main" {
   subnets            = aws_subnet.public[*].id
   security_groups    = [aws_security_group.alb.id]
 
-  # Model calls are slow: we've measured 48 s for one request. The ALB closes a connection
-  # after this many seconds with no bytes flowing, so the default of 60 is too tight.
-  idle_timeout = 180
+  # Seconds with no bytes flowing before the ALB closes the connection. A non-streaming
+  # model call sends nothing until it finishes (we've measured 78 s), so the default of 60
+  # is far too tight. This is the last resort only: the gateway's own 120 s deadline fires
+  # first and returns an error that explains itself. Streaming responses keep sending, so
+  # they are governed by the upstream read timeout, not by this.
+  idle_timeout = 150
 
   drop_invalid_header_fields = true
 }

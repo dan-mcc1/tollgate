@@ -1,10 +1,15 @@
 """Retries, timeouts and connection failures, against a scripted fake upstream."""
 
+import asyncio
+
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import Keys, usage_rows
+from tollgate.config import Settings
+from tollgate.main import app
+from tollgate.proxy.passthrough import create_upstream_client
 
 URL = "/v1beta/models/gemini-3.7-flash:generateContent"
 BODY = {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
@@ -142,6 +147,34 @@ async def test_connection_failures_are_retried_then_reported_as_502(
     assert response.json()["error"]["code"] == "upstream_unreachable"
     [row] = await usage_rows(sessionmaker)
     assert row.upstream_attempts == 3
+
+
+async def test_slow_upstream_hits_the_gateway_deadline_first(
+    gateway: httpx.AsyncClient,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    keys: Keys,
+    upstream: ScriptedUpstream,
+    settings: Settings,
+) -> None:
+    # The gateway gives up before the load balancer would, so the caller gets an error
+    # that explains itself instead of the load balancer cutting the connection.
+    settings.request_deadline_s = 0.2
+
+    async def never_answers(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        raise AssertionError("unreachable")
+
+    upstream.steps = []
+    app.state.http_client = create_upstream_client(
+        settings, transport=httpx.MockTransport(never_answers)
+    )
+
+    response = await post(gateway, keys)
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "gateway_deadline_exceeded"
+    [row] = await usage_rows(sessionmaker)
+    assert (row.status_code, row.error_code) == (504, "gateway_deadline_exceeded")
 
 
 async def test_pool_exhaustion_is_reported_as_gateway_overload(

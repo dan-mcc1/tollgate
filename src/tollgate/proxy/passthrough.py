@@ -150,7 +150,15 @@ async def proxy_generate_content(
             client, request, settings, f"/v1beta/models/{model}:{method}", body
         )
         try:
-            response = await send_with_retries(client, settings, upstream_request, record)
+            # One deadline over the whole exchange, retries included. Without it, a slow
+            # upstream plus retries could outlast the load balancer's patience, and the
+            # caller would get its generic 504 instead of an error that says what happened.
+            async with asyncio.timeout(settings.request_deadline_s):
+                response = await send_with_retries(client, settings, upstream_request, record)
+        except TimeoutError as exc:
+            raise GatewayError(
+                504, "gateway_deadline_exceeded", "The request took longer than the gateway allows."
+            ) from exc
         except httpx.HTTPError as exc:
             raise map_transport_error(exc) from exc
 

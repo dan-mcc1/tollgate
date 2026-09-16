@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     upstream_backoff_base_s: float = 0.25
     upstream_backoff_max_s: float = 4.0
 
+    # Longest a non-streaming request may take in total, including retries. Streaming
+    # requests aren't capped: they keep sending, so the read timeout above governs them.
+    # Keep this below the load balancer's idle timeout, so the gateway returns a clean
+    # error instead of the load balancer cutting the connection.
+    request_deadline_s: float = 120.0
+
     # Readiness checks. Keep the timeouts below the load balancer's health check timeout.
     readiness_db_timeout_s: float = 2.0
     readiness_upstream_timeout_s: float = 3.0
