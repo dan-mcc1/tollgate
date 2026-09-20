@@ -30,6 +30,7 @@ from tollgate.auth import TenantContext
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
+from tollgate.limits import BudgetGuard
 from tollgate.proxy.passthrough import (
     DROPPED_RESPONSE_HEADERS,
     RETRYABLE_STATUS,
@@ -39,11 +40,12 @@ from tollgate.proxy.passthrough import (
 )
 from tollgate.proxy.sse import StreamScanner
 from tollgate.usage import (
+    PriceBook,
     apply_usage_payload,
+    run_even_if_cancelled,
     upstream_error_code,
     upstream_error_status,
     write_usage,
-    write_usage_even_if_cancelled,
 )
 
 logger = logging.getLogger("tollgate.stream")
@@ -103,6 +105,8 @@ async def proxy_stream_generate_content(
     settings: Settings = request.app.state.settings
     client: httpx.AsyncClient = request.app.state.http_client
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
+    pricebook: PriceBook = request.app.state.pricebook
+    budget: BudgetGuard = request.app.state.budget
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -116,10 +120,25 @@ async def proxy_stream_generate_content(
         error_code="internal_error",
     )
     body = await request.body()
+    # Before the upstream is opened. A streamed response's cost is unknown at this point,
+    # so what is claimed here is an estimate built from the request's own ceiling; the
+    # settlement at the end of the stream replaces it with the real figure.
+    reservation = await budget.reserve(tenant, model, body)
     started = time.perf_counter()
 
     def elapsed_ms() -> int:
         return round((time.perf_counter() - started) * 1000)
+
+    async def finish() -> None:
+        """Close the books on this request: one ledger row, then the settlement.
+
+        In that order, always. The settlement's script skips a month counter that has
+        been evicted, on the understanding that the row is already in the ledger for the
+        next reseed to find. If the write fails the settlement never runs, and the
+        reservation is released by its lease instead.
+        """
+        await write_usage(sessionmaker, pricebook, record)
+        await budget.settle(reservation, record.cost_microcents)
 
     # --- before the first byte: ordinary error handling still applies --------------------
 
@@ -136,7 +155,7 @@ async def proxy_stream_generate_content(
             error.code,
         )
         record.upstream_latency_ms = elapsed_ms()
-        await write_usage(sessionmaker, record)
+        await finish()
         raise error from exc
 
     if not upstream.is_success:
@@ -146,7 +165,7 @@ async def proxy_stream_generate_content(
         record.error_source = "upstream"
         record.error_code = upstream_error_code(payload) or f"http_{upstream.status_code}"
         record.upstream_latency_ms = elapsed_ms()
-        await write_usage(sessionmaker, record)
+        await finish()
         return Response(
             content=payload, status_code=upstream.status_code, headers=response_headers(upstream)
         )
@@ -189,7 +208,7 @@ async def proxy_stream_generate_content(
         finally:
             record.upstream_latency_ms = elapsed_ms()
             await upstream.aclose()  # stop pulling from the provider immediately
-            await write_usage_even_if_cancelled(sessionmaker, record)
+            await run_even_if_cancelled(finish(), "ledger row and budget settlement")
 
     return StreamingResponse(
         relay(),

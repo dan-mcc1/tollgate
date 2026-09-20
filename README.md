@@ -8,8 +8,9 @@ Request and response bodies stay byte-compatible with the provider's API, so an 
 application adopts Tollgate by changing one base URL, and the official SDK keeps working.
 
 > **Status:** live at `https://tollgate.danmccabe.dev`, deployed from `main` by GitHub Actions.
-> Streaming and non-streaming passthrough, tenant authentication and usage accounting work.
-> Rate limits, budgets, caching and detection are next. See [Roadmap](#roadmap).
+> Streaming and non-streaming passthrough, tenant authentication, usage accounting, rate
+> limits and spend budgets work. Observability, caching and detection are next.
+> See [Roadmap](#roadmap).
 
 ## Why a gateway exists
 
@@ -54,8 +55,12 @@ Decisions made up front, before the code that depends on them:
 | Byte-compatible with the provider API | Adoption is a base URL change. It also means streaming has to be relayed event by event, not rebuilt. |
 | Provider credential stays server side | Tenants authenticate to Tollgate with their own keys and never see the upstream key. |
 | Tenant keys stored only as SHA-256 hashes | A database leak doesn't expose live credentials. A short plaintext prefix identifies a key in logs. |
-| Money in integer minor units | Floating-point cost errors are small, silent and impossible to reconstruct later. A test will enforce it. |
+| Money in integer micro-cents | Floating-point cost errors are small, silent and impossible to reconstruct later, and a cent is too coarse to hold a request: one flash call costs a few hundred micro-cents. A test fails the build on any float or decimal column. |
 | Budgets reserved before the upstream call | A streamed response's cost is unknown when it starts, so an estimate is reserved from the requested maximum and reconciled when the stream ends. |
+| A reservation is a lease, not a lock | A gateway killed mid-stream would otherwise hold part of a tenant's budget until someone noticed. Reservations carry an expiry and the next request drops the ones that ran out. |
+| Nothing in Redis is a source of truth | Every key is a cache of the ledger or in-flight bookkeeping, each with a TTL. That is what makes it safe to run Redis with eviction enabled. |
+| Rate limits fail open, budgets do not | A limiter protects the upstream, so its outage must not become a total outage. A budget is money, and Postgres already holds the ledger, so losing Redis costs precision rather than enforcement. |
+| Out of budget is 402, not 429 | Retrying will not work until the month turns over. A `Retry-After` measured in weeks is worse than no hint at all. |
 | Caches scoped per tenant | A shared cache leaks information about one tenant's traffic to another. |
 | Semantic cache threshold chosen from a measured curve | A wrong semantic hit is a correctness bug, not a performance trade-off. The false hit rate gets published next to the savings. |
 | Detection defaults to monitor mode | Blocking is opt-in per tenant, which is how detection is rolled out in practice. |
@@ -136,9 +141,9 @@ measurement exists, including the ones that turn out badly.
 |---|---|---|---|
 | Gateway overhead, p50 and p99 | Same call made directly to the provider | 1, 8 | +10.4 ms / +14.1 ms (local baseline, see below) |
 | Added time to first token, streamed | Direct streaming call | 3 | **+5.2 ms** p50, **+5.4 ms** p99 (local) |
-| Rate limit accuracy across containers | In-process counters vs Redis | 4 | — |
-| Budget reservation error, streamed | Reserved estimate vs reconciled actual | 4 | — |
-| Usage rollup query time | Before and after the index, with plans | 4 | — |
+| Rate limit accuracy across containers | In-process counters vs Redis | 4 | in-process **+95%** at 2 tasks, **+388%** at 5; Redis **0%** at any count |
+| Budget reservation error, streamed | Reserved estimate vs reconciled actual | 4 | estimate overshoots **14x** (median); reconciled error **0 micro-cents** |
+| Usage rollup query time | Before and after the index, with plans | 4 | **7.7 ms → 0.2 ms**, 8,334 → 33 buffers |
 | Cache hit rate, exact and semantic | Each other, and no cache | 6 | — |
 | Spend avoided per 1,000 requests | Identical traffic with caching disabled | 6 | — |
 | Semantic false hit rate at chosen threshold | Full threshold sweep | 6 | — |
@@ -161,6 +166,32 @@ response, which is the check that matters. A gateway that buffered would show th
 token arriving at the end, and its added time to first token would equal the whole
 response time rather than 5 ms.
 
+The phase 4 numbers come from three commands, and their full output is committed under
+`bench/results/`.
+
+`bench/limit_accuracy.py` gives one tenant 600 requests a minute with a burst of 10, offers
+twelve times that for three seconds, and counts what gets through. One container allows the
+40 it should. Two allow 78, three allow 117, five allow 195 — each container refilling a
+bucket of its own, and nothing in the code looking broken. With the buckets in Redis the
+answer is 39 whatever the container count, because there is one bucket. (39 rather than 40:
+the window closes a fraction before the last token refills.)
+
+`bench/reservation_error.py` streams 21 requests with `maxOutputTokens` cycling from 64 to
+4096 and compares each reservation with what the request actually cost. The estimate
+overshoots by 14x at the median and 110x at worst — a request that asked for 4096 tokens and
+got a short answer — which is budget a tenant cannot spend while the request is in flight.
+After settlement the month's counter in Redis and the sum over the ledger agree exactly: an
+error of zero micro-cents, not "within a cent".
+
+`bench/rollup_plan.py` builds a throwaway database of 400,000 ledger rows across 25 tenants
+and four months, then runs the budget check and the spend rollup under three index variants.
+A sequential scan takes 7.7 ms and touches 8,334 buffers; `(tenant_id, created_at)` takes
+1.1 ms and 2,508; adding `INCLUDE` for the columns both queries read takes 0.2 ms and 33,
+because it becomes an index-only scan. The last figure is a best case — an index-only scan
+still visits the heap for rows whose page is not yet marked all-visible, and on an
+append-only table those are the newest rows, which is exactly what a current-month query
+reads.
+
 The cost is measured AWS spend for one full day with the stack up: the load balancer and
 its IPv4 addresses are most of it, then Fargate, then pennies for everything else. The
 stack is normally destroyed between work sessions (`terraform destroy` in `infra/main`,
@@ -178,8 +209,10 @@ database, images, secrets and DNS. Neon is billed separately for the hours it is
   with OIDC that tests, deploys, smoke tests and rolls back; readiness checks; a billing alarm.
 - [x] **3. Streaming.** Unbuffered SSE relay, usage parsed from the stream, correct accounting on
   client disconnect and mid-stream upstream failure, bounded memory.
-- [ ] **4. Limits and budgets.** Per-tenant token buckets in Redis, versioned price table, budget
-  reservation and reconciliation, append-only ledger, a spend endpoint per tenant.
+- [x] **4. Limits and budgets.** Per-tenant token buckets in Redis with an atomic Lua script,
+  versioned price table, money in integer micro-cents, budget reservation held as an expiring
+  lease and reconciled on settlement, a covering index chosen from the query plan, and
+  `GET /v1/spend` per tenant.
 - [ ] **5. Observability.** OpenTelemetry traces per request, Prometheus metrics that separate
   gateway overhead from upstream time, a version-controlled Grafana dashboard, one real alert.
 - [ ] **6. Caching.** Exact cache on a normalised request hash, semantic cache on pgvector, cached
@@ -209,7 +242,7 @@ database, images, secrets and DNS. Neon is billed separately for the hours it is
 | Migrations | Alembic, SQLAlchemy 2.0 async | in use |
 | Tooling | uv, ruff, mypy (strict), pytest | in use |
 | Local environment | Docker Compose | in use |
-| Counters | Redis | phase 4 |
+| Counters | Redis (Upstash in production) | in use |
 | Compute | AWS ECS Fargate | in use |
 | Infrastructure | Terraform | in use |
 | Pipeline | GitHub Actions with OIDC | in use |
@@ -250,6 +283,27 @@ By default the gateway forwards to the mock. To use the real API, set
 `UPSTREAM_BASE_URL=https://generativelanguage.googleapis.com` and `GEMINI_API_KEY` in `.env`.
 
 Other key commands: `uv run tollgate list-keys acme` and `uv run tollgate revoke-key tg_AbCdEfGhI`.
+
+Limits, budgets and prices are set the same way:
+
+```sh
+uv run tollgate tenants                                   # limits and budgets, per tenant
+uv run tollgate set-limits acme --rpm 120 --burst 240     # or --unlimited
+uv run tollgate set-budget acme --usd 25                  # or --unlimited
+uv run tollgate prices                                    # every price version in force
+uv run tollgate set-price gemini-3.7-flash --input 0.30 --output 2.50
+```
+
+A tenant reads its own spend with its own key, and can see no one else's:
+
+```sh
+curl -H "x-goog-api-key: tg_..." localhost:8000/v1/spend          # this month
+curl -H "x-goog-api-key: tg_..." localhost:8000/v1/spend?month=2026-08
+```
+
+Rate limiting uses in-process buckets by default, which is correct for one container and
+wrong for several. Set `LIMITER_BACKEND=redis` and `REDIS_URL` to share them; see
+[`src/tollgate/limits.py`](src/tollgate/limits.py) for why the two backends both exist.
 
 Run the checks CI runs:
 
@@ -324,7 +378,8 @@ src/tollgate/
 migrations/            Alembic environment and versions
 mock_upstream/         fake Gemini API: SSE, usage, scripted faults
 tests/                 unit and integration tests, no network
-bench/                 detection evaluation, cache threshold sweep, load scenarios
+bench/                 baseline and streaming latency, limit accuracy, reservation error,
+                       rollup query plans; results committed under bench/results/
 infra/                 Terraform (phase 2)
 dashboards/            Grafana dashboard JSON (phase 5)
 postgres/              init SQL for the local database

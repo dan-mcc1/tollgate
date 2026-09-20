@@ -30,6 +30,11 @@ class TenantContext:
     tenant_id: uuid.UUID
     tenant_name: str
     api_key_id: uuid.UUID
+    # Carried here rather than re-read downstream: authentication already reads the
+    # tenant row, so a limit costs nothing extra to know.
+    rate_limit_rpm: int | None = None
+    rate_limit_burst: int | None = None
+    monthly_budget_microcents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +61,14 @@ async def resolve_key(session: AsyncSession, key: str) -> TenantContext | None:
     """Return the tenant for a live key, or None if the key is unknown, revoked, or
     belongs to a deactivated tenant."""
     stmt = (
-        select(ApiKey.id, Tenant.id, Tenant.name)
+        select(
+            ApiKey.id,
+            Tenant.id,
+            Tenant.name,
+            Tenant.rate_limit_rpm,
+            Tenant.rate_limit_burst,
+            Tenant.monthly_budget_microcents,
+        )
         .join(Tenant, ApiKey.tenant_id == Tenant.id)
         .where(
             ApiKey.key_hash == hash_key(key),
@@ -67,8 +79,15 @@ async def resolve_key(session: AsyncSession, key: str) -> TenantContext | None:
     row = (await session.execute(stmt)).one_or_none()
     if row is None:
         return None
-    api_key_id, tenant_id, tenant_name = row
-    return TenantContext(tenant_id=tenant_id, tenant_name=tenant_name, api_key_id=api_key_id)
+    api_key_id, tenant_id, tenant_name, rpm, burst, budget = row
+    return TenantContext(
+        tenant_id=tenant_id,
+        tenant_name=tenant_name,
+        api_key_id=api_key_id,
+        rate_limit_rpm=rpm,
+        rate_limit_burst=burst,
+        monthly_budget_microcents=budget,
+    )
 
 
 async def require_tenant(request: Request) -> TenantContext:

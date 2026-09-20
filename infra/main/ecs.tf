@@ -50,6 +50,9 @@ resource "aws_ecs_task_definition" "app" {
       { name = "UPSTREAM_BASE_URL", value = var.upstream_base_url },
       { name = "GEMINI_MODEL", value = var.gemini_model },
       { name = "MOCK_GEMINI", value = "false" },
+      # Rate-limit buckets live in Redis, not in the task. With more than one task the
+      # in-process limiter would give each tenant its limit once per task.
+      { name = "LIMITER_BACKEND", value = var.limiter_backend },
       # The pipeline overwrites this with the commit SHA on every deploy.
       { name = "APP_VERSION", value = try(data.aws_ecr_image.initial.image_tags[0], "unknown") },
     ]
@@ -59,6 +62,7 @@ resource "aws_ecs_task_definition" "app" {
     secrets = [
       { name = "DATABASE_URL", valueFrom = data.aws_secretsmanager_secret.database_url.arn },
       { name = "GEMINI_API_KEY", valueFrom = data.aws_secretsmanager_secret.gemini_api_key.arn },
+      { name = "REDIS_URL", valueFrom = data.aws_secretsmanager_secret.redis_url.arn },
     ]
 
     logConfiguration = {

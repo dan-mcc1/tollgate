@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +38,31 @@ class Settings(BaseSettings):
     # Keep this below the load balancer's idle timeout, so the gateway returns a clean
     # error instead of the load balancer cutting the connection.
     request_deadline_s: float = 120.0
+
+    # Rate limiting. "memory" keeps a bucket per container, which multiplies a
+    # tenant's effective limit by the number of containers; "redis" is the one that is
+    # correct on more than one task. Both are kept so the difference can be measured.
+    limiter_backend: Literal["memory", "redis"] = "memory"
+    redis_url: SecretStr = SecretStr("")
+    redis_connect_timeout_s: float = 1.0
+    redis_command_timeout_s: float = 0.5
+    # Allow the request when Redis can't answer. See the module docstring in limits.py.
+    rate_limit_fail_open: bool = True
+
+    # Budgets. A reservation is a lease: this is how long one survives a gateway that
+    # dies mid-request, so it must comfortably exceed request_deadline_s.
+    budget_lease_s: float = 300.0
+    # What to assume a response will run to when the request names no maxOutputTokens.
+    # Generous on purpose - it is reconciled to the real figure moments later.
+    budget_default_max_output_tokens: int = 8192
+    # The month counter outlives its month, so a request on the 1st still finds
+    # December's total where it left it rather than reseeding from the ledger.
+    budget_month_ttl_s: float = 40 * 24 * 60 * 60
+
+    # How long a price inserted by another container can take to come into force here.
+    # Prices change a few times a year, so a stale minute costs nothing and saves a
+    # database round trip on every single request.
+    price_refresh_s: float = 300.0
 
     # Readiness checks. Keep the timeouts below the load balancer's health check timeout.
     readiness_db_timeout_s: float = 2.0

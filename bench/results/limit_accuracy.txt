@@ -1,0 +1,12 @@
+600 requests/minute, burst 10, over a 3s window,
+offered at 12x the permitted rate.
+
+backend      containers  offered  entitled  allowed    error
+in-process            1      359        40       39      -2%
+in-process            2      359        40       78      95%
+in-process            3      359        40      117     192%
+in-process            5      359        40      195     388%
+redis                 1      359        40       39      -2%
+redis                 2      358        40       39      -2%
+redis                 3      359        40       39      -2%
+redis                 5      359        40       39      -2%

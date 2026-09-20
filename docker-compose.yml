@@ -17,6 +17,20 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: tollgate-redis
+    ports:
+      - "6379:6379"
+    # No persistence: every key here is a rate-limit bucket that rebuilds itself in
+    # seconds, so losing the lot on restart costs nothing worth writing to disk.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   mock-upstream:
     build:
       context: .

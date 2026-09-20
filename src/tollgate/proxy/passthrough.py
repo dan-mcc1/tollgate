@@ -16,7 +16,8 @@ from tollgate.auth import TenantContext
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
-from tollgate.usage import apply_usage_metadata, upstream_error_code, write_usage
+from tollgate.limits import BudgetGuard
+from tollgate.usage import PriceBook, apply_usage_metadata, upstream_error_code, write_usage
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -131,6 +132,8 @@ async def proxy_generate_content(
     settings: Settings = request.app.state.settings
     client: httpx.AsyncClient = request.app.state.http_client
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
+    pricebook: PriceBook = request.app.state.pricebook
+    budget: BudgetGuard = request.app.state.budget
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -143,6 +146,9 @@ async def proxy_generate_content(
         error_code="internal_error",
     )
     body = await request.body()
+    # Before anything reaches the upstream. A refusal here costs nothing and writes no
+    # ledger row, because the request was never sent and so was never spent.
+    reservation = await budget.reserve(tenant, model, body)
     started = time.perf_counter()
 
     try:
@@ -180,7 +186,9 @@ async def proxy_generate_content(
         raise
     finally:
         record.upstream_latency_ms = round((time.perf_counter() - started) * 1000)
-        await write_usage(sessionmaker, record)  # exactly one row, whatever happened above
+        # exactly one row, priced, whatever happened above
+        await write_usage(sessionmaker, pricebook, record)
+        await budget.settle(reservation, record.cost_microcents)
 
 
 def map_transport_error(exc: httpx.HTTPError) -> GatewayError:

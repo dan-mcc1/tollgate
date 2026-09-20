@@ -57,3 +57,14 @@ variable "log_retention_days" {
   type    = number
   default = 14
 }
+
+variable "limiter_backend" {
+  description = "Where rate-limit buckets live. 'memory' is per-task and wrong above one task."
+  type        = string
+  default     = "redis"
+
+  validation {
+    condition     = contains(["memory", "redis"], var.limiter_backend)
+    error_message = "limiter_backend must be 'memory' or 'redis'."
+  }
+}

@@ -25,6 +25,10 @@ data "aws_secretsmanager_secret" "gemini_api_key" {
   name = "${var.name}/gemini-api-key"
 }
 
+data "aws_secretsmanager_secret" "redis_url" {
+  name = "${var.name}/redis-url"
+}
+
 data "aws_iam_role" "github_deploy" {
   name = "${var.name}-github-deploy"
 }

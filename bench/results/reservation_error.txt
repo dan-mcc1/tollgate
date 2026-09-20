@@ -1,0 +1,15 @@
+21 streamed requests, maxOutputTokens cycling 64-4096.
+
+reservation against actual cost
+  median overshoot              14.1x
+  worst                        109.6x
+  best                           1.1x
+
+reconciliation after settlement
+  this run                     259,140 uc  $0.002591
+  ledger, month to date        518,280 uc  $0.005183
+  redis month counter          518,280 uc  $0.005183
+  error                              0 uc
+
+  The counter is seeded from the ledger and moved only by settlements, so
+  anything but zero means an estimate was left standing as a charge.

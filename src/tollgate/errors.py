@@ -13,11 +13,20 @@ from fastapi.responses import JSONResponse
 
 
 class GatewayError(Exception):
-    def __init__(self, status_code: int, code: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
+        # Some refusals carry a hint the body cannot: Retry-After on a 429 is the one
+        # header a client's own retry logic already knows how to read.
+        self.headers = headers
 
 
 async def handle_gateway_error(request: Request, exc: Exception) -> JSONResponse:
@@ -26,4 +35,5 @@ async def handle_gateway_error(request: Request, exc: Exception) -> JSONResponse
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"source": "gateway", "code": exc.code, "message": exc.message}},
+        headers=exc.headers,
     )

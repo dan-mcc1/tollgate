@@ -1,0 +1,96 @@
+400,000 ledger rows across 25 tenants and about four months.
+The measured tenant has 2,689 rows in the current month.
+
+--- without an index: index size none
+=== budget check, without an index: 7.7 ms (median of 5)
+Finalize Aggregate  (cost=12253.65..12253.66 rows=1 width=32) (actual time=6.804..7.829 rows=1 loops=1)
+  Buffers: shared hit=8334
+  ->  Gather  (cost=12253.43..12253.64 rows=2 width=32) (actual time=6.739..7.824 rows=3 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=8334
+        ->  Partial Aggregate  (cost=11253.43..11253.44 rows=1 width=32) (actual time=5.062..5.063 rows=1 loops=3)
+              Buffers: shared hit=8334
+              ->  Parallel Seq Scan on usage_records  (cost=0.00..11250.67 rows=1105 width=8) (actual time=0.010..5.021 rows=896 loops=3)
+                    Filter: ((created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone) AND (tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid))
+                    Rows Removed by Filter: 132437
+                    Buffers: shared hit=8334
+Planning Time: 0.048 ms
+Execution Time: 7.841 ms
+
+=== spend rollup, without an index: 7.9 ms (median of 5)
+Finalize GroupAggregate  (cost=12306.55..12323.98 rows=3 width=73) (actual time=6.372..7.330 rows=3 loops=1)
+  Group Key: model
+  Buffers: shared hit=8408
+  ->  Gather Merge  (cost=12306.55..12323.85 rows=6 width=73) (actual time=6.322..7.323 rows=9 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=8408
+        ->  Partial GroupAggregate  (cost=11306.52..11323.14 rows=3 width=73) (actual time=5.129..5.183 rows=3 loops=3)
+              Group Key: model
+              Buffers: shared hit=8408
+              ->  Sort  (cost=11306.52..11309.29 rows=1105 width=33) (actual time=5.100..5.123 rows=896 loops=3)
+                    Sort Key: model
+                    Sort Method: quicksort  Memory: 114kB
+                    Buffers: shared hit=8408
+                    Worker 0:  Sort Method: quicksort  Memory: 61kB
+                    Worker 1:  Sort Method: quicksort  Memory: 62kB
+                    ->  Parallel Seq Scan on usage_records  (cost=0.00..11250.67 rows=1105 width=33) (actual time=0.019..4.960 rows=896 loops=3)
+                          Filter: ((created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone) AND (tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid))
+                          Rows Removed by Filter: 132437
+                          Buffers: shared hit=8334
+Planning Time: 0.059 ms
+Execution Time: 7.348 ms
+
+--- with (tenant_id, created_at): index size 16 MB
+=== budget check, with (tenant_id, created_at): 1.1 ms (median of 5)
+Aggregate  (cost=5645.64..5645.65 rows=1 width=32) (actual time=1.022..1.022 rows=1 loops=1)
+  Buffers: shared hit=2508
+  ->  Bitmap Heap Scan on usage_records  (cost=85.73..5639.11 rows=2612 width=8) (actual time=0.272..0.945 rows=2689 loops=1)
+        Recheck Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+        Heap Blocks: exact=2492
+        Buffers: shared hit=2508
+        ->  Bitmap Index Scan on ix_usage_records_tenant_id_created_at  (cost=0.00..85.07 rows=2612 width=0) (actual time=0.118..0.118 rows=2689 loops=1)
+              Index Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+              Buffers: shared hit=16
+Planning Time: 0.041 ms
+Execution Time: 1.032 ms
+
+=== spend rollup, with (tenant_id, created_at): 1.2 ms (median of 5)
+HashAggregate  (cost=5671.76..5671.80 rows=3 width=73) (actual time=1.274..1.275 rows=3 loops=1)
+  Group Key: model
+  Batches: 1  Memory Usage: 24kB
+  Buffers: shared hit=2508
+  ->  Bitmap Heap Scan on usage_records  (cost=85.73..5639.11 rows=2612 width=33) (actual time=0.285..1.027 rows=2689 loops=1)
+        Recheck Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+        Heap Blocks: exact=2492
+        Buffers: shared hit=2508
+        ->  Bitmap Index Scan on ix_usage_records_tenant_id_created_at  (cost=0.00..85.07 rows=2612 width=0) (actual time=0.113..0.114 rows=2689 loops=1)
+              Index Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+              Buffers: shared hit=16
+Planning Time: 0.052 ms
+Execution Time: 1.289 ms
+
+--- with the covering index: index size 34 MB
+=== budget check, with the covering index: 0.2 ms (median of 5)
+Aggregate  (cost=187.58..187.59 rows=1 width=32) (actual time=0.216..0.216 rows=1 loops=1)
+  Buffers: shared hit=33
+  ->  Index Only Scan using ix_usage_records_tenant_id_created_at on usage_records  (cost=0.42..180.86 rows=2686 width=8) (actual time=0.007..0.143 rows=2689 loops=1)
+        Index Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+        Heap Fetches: 0
+        Buffers: shared hit=33
+Planning Time: 0.057 ms
+Execution Time: 0.226 ms
+
+=== spend rollup, with the covering index: 0.4 ms (median of 5)
+HashAggregate  (cost=214.43..214.47 rows=3 width=73) (actual time=0.393..0.394 rows=3 loops=1)
+  Group Key: model
+  Batches: 1  Memory Usage: 24kB
+  Buffers: shared hit=33
+  ->  Index Only Scan using ix_usage_records_tenant_id_created_at on usage_records  (cost=0.42..180.86 rows=2686 width=33) (actual time=0.006..0.164 rows=2689 loops=1)
+        Index Cond: ((tenant_id = 'ff8f4e55-60f2-4ff1-905b-93ad995af02c'::uuid) AND (created_at >= '2026-09-01 00:00:00+00'::timestamp with time zone) AND (created_at < '2026-10-01 00:00:00+00'::timestamp with time zone))
+        Heap Fetches: 0
+        Buffers: shared hit=33
+Planning Time: 0.064 ms
+Execution Time: 0.408 ms
+

@@ -19,7 +19,11 @@ output "ecr_repository_url" {
 
 output "secret_names" {
   description = "Set each value once with `aws secretsmanager put-secret-value`."
-  value       = [aws_secretsmanager_secret.database_url.name, aws_secretsmanager_secret.gemini_api_key.name]
+  value = [
+    aws_secretsmanager_secret.database_url.name,
+    aws_secretsmanager_secret.gemini_api_key.name,
+    aws_secretsmanager_secret.redis_url.name,
+  ]
 }
 
 output "github_deploy_role_arn" {

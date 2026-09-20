@@ -223,6 +223,19 @@ resource "aws_secretsmanager_secret" "gemini_api_key" {
   }
 }
 
+# Upstash rather than ElastiCache: serverless, free at this volume, and reachable over
+# TLS from a public subnet, so it needs no VPC endpoint and no NAT gateway. ElastiCache
+# would be about ten dollars a month and several more Terraform resources, for a store
+# whose entire contents are rate-limit buckets that rebuild themselves in seconds.
+resource "aws_secretsmanager_secret" "redis_url" {
+  name        = "tollgate/redis-url"
+  description = "Upstash connection string, rediss://default:...@....upstash.io:6379"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 # -----------------------------------------------------------------------------------------
 # 6. Billing alarm
 # -----------------------------------------------------------------------------------------
