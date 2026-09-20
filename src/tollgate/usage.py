@@ -41,6 +41,20 @@ def apply_usage_metadata(record: UsageRecord, body: bytes) -> None:
         apply_usage_payload(record, payload)
 
 
+def upstream_error_status(payload: dict[str, Any]) -> str | None:
+    """The error status inside one parsed response or stream event, if it carries one.
+
+    A provider can fail *inside* a stream: the connection stays healthy and an ordinary
+    event arrives holding an error object instead of content. Nothing else notices, so
+    without this the ledger would record a failed request as a clean success.
+    """
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    status = error.get("status") or error.get("code")
+    return str(status) if status is not None else "unknown"
+
+
 def upstream_error_code(body: bytes) -> str | None:
     """The `status` field of a Google-shaped error body, e.g. RESOURCE_EXHAUSTED."""
     try:

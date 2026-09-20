@@ -216,3 +216,37 @@ async def test_upstream_error_before_the_stream_starts_is_a_normal_error(
     assert response.json()["error"]["status"] == "INVALID_ARGUMENT"
     [row] = await usage_rows(sessionmaker)
     assert (row.status_code, row.error_source, row.streamed) == (400, "upstream", True)
+
+
+async def test_upstream_error_event_inside_a_stream_is_recorded(
+    live_gateway: httpx.AsyncClient,
+    sessionmaker: Sessionmaker,
+    keys: Keys,
+    live_upstream: str,
+) -> None:
+    # Seen in production: the connection stays healthy and Gemini sends an error object as
+    # an ordinary event. Nothing breaks, so only reading the events catches it.
+    google_503 = json.dumps(
+        {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+    )
+    await queue_script(
+        live_upstream,
+        [
+            {"text": "partial answer", "usage": {"candidatesTokenCount": 3}},
+            {"raw": f"data: {google_503}\r\n\r\n"},
+        ],
+    )
+
+    chunks: list[bytes] = []
+    async with live_gateway.stream(
+        "POST", f"{STREAM_URL}?alt=sse", json=BODY, headers=auth(keys.live)
+    ) as response:
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+
+    # Relayed untouched, in the provider's own shape.
+    assert sse_payloads(chunks)[-1]["error"]["status"] == "UNAVAILABLE"
+
+    [row] = await usage_rows(sessionmaker)
+    assert (row.status_code, row.error_source, row.error_code) == (200, "upstream", "UNAVAILABLE")
+    assert row.output_tokens == 3  # billed for what arrived before the failure

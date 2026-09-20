@@ -14,7 +14,11 @@ from google import genai
 
 GATEWAY_URL = "https://tollgate.danmccabe.dev"
 MODEL = "gemini-3.7-flash"
-PROMPT = "Explain what an API gateway does, in about a hundred words."
+# Long, and with thinking off. Gemini buffers the start of a response, so a short answer
+# arrives as a single burst even with no gateway in the path, and a thinking model spends
+# most of the wait before it has anything to send. Neither shows whether relaying works.
+PROMPT = "Write a detailed 900 word essay about the history of computer networking."
+NO_THINKING = {"thinking_config": {"thinking_budget": 0}}
 
 
 def main() -> None:
@@ -36,7 +40,10 @@ def main() -> None:
     started = time.perf_counter()
     first: float | None = None
     usage = None
-    for chunk in client.models.generate_content_stream(model=args.model, contents=PROMPT):
+    stream = client.models.generate_content_stream(
+        model=args.model, contents=PROMPT, config=NO_THINKING
+    )
+    for chunk in stream:
         elapsed_ms = (time.perf_counter() - started) * 1000
         if first is None:
             first = elapsed_ms

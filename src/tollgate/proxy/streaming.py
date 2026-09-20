@@ -41,6 +41,7 @@ from tollgate.proxy.sse import StreamScanner
 from tollgate.usage import (
     apply_usage_payload,
     upstream_error_code,
+    upstream_error_status,
     write_usage,
     write_usage_even_if_cancelled,
 )
@@ -164,6 +165,11 @@ async def proxy_stream_generate_content(
                     record.upstream_ttfb_ms = elapsed_ms()
                 for event in scanner.feed(chunk):
                     apply_usage_payload(record, event)  # running totals; the last one wins
+                    if status := upstream_error_status(event):
+                        # The upstream reported a failure inside the stream. Relay it as
+                        # it is (the caller's SDK will raise on it) and record it: the
+                        # response is incomplete, whatever the 200 says.
+                        record.error_source, record.error_code = "upstream", status
                 yield chunk  # waits for the caller to take it: backpressure, not buffering
         except Exception as exc:
             # A 200 and some events are already out, so the status code can't say this.
