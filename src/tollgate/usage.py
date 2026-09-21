@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tollgate.cache.keys import HIT_STATUSES
 from tollgate.db.models import ModelPrice, UsageRecord
 from tollgate.telemetry import record_usage, stage
 
@@ -190,6 +191,12 @@ class PriceBook:
         Both stay NULL when the upstream never reported tokens, or when the model has no
         price. That is deliberate: an unpriced row is a gap a query can find and an
         operator can fill, where a zero is indistinguishable from a genuinely free call.
+
+        A request served from the cache is the one case where a zero is the truth. The
+        same arithmetic runs, at today's price rather than the price on the day the entry
+        was written, but the answer lands in `cost_avoided_microcents` and the tenant is
+        charged nothing. Pricing a hit at today's rate is what makes the saving comparable
+        with the spend beside it on the dashboard: both answer "what would this month cost".
         """
         if record.input_tokens is None and record.output_tokens is None:
             return
@@ -198,10 +205,36 @@ class PriceBook:
             logger.warning("no price for model", extra={"fields": {"model": record.model}})
             return
         record.price_id = price.id
-        record.cost_microcents = price.cost(
+        cost = price.cost(
             input_tokens=record.input_tokens or 0,
             output_tokens=record.output_tokens or 0,
             thoughts_tokens=record.thoughts_tokens or 0,
+        )
+        if record.cache_status in HIT_STATUSES:
+            record.cost_microcents = 0
+            record.cost_avoided_microcents = cost
+        else:
+            record.cost_microcents = cost
+
+    async def apply_embedding(
+        self, record: UsageRecord, tokens: int, model: str | None, at: datetime | None = None
+    ) -> None:
+        """Price what the semantic tier spent looking, if it looked.
+
+        Its own column, never added into `cost_microcents`. The embedding is the
+        gateway's spend on the tenant's behalf rather than the generation the tenant
+        asked for, and a tier that quietly inflated the bill it was meant to reduce
+        would be impossible to argue for. Keeping the two apart is also what lets the
+        bench net one against the other and say whether the tier pays for itself.
+        """
+        if not tokens or model is None:
+            return
+        price = await self.price_for(model, at or datetime.now(UTC))
+        if price is None:
+            logger.warning("no price for embedding model", extra={"fields": {"model": model}})
+            return
+        record.embedding_cost_microcents = price.cost(
+            input_tokens=tokens, output_tokens=0, thoughts_tokens=0
         )
 
 
@@ -209,15 +242,22 @@ class PriceBook:
 
 
 async def write_usage(
-    sessionmaker: async_sessionmaker[AsyncSession], pricebook: PriceBook, record: UsageRecord
+    sessionmaker: async_sessionmaker[AsyncSession],
+    pricebook: PriceBook,
+    record: UsageRecord,
+    *,
+    embedding_tokens: int = 0,
+    embedding_model: str | None = None,
 ) -> None:
     """Price the request, then append it to the ledger.
 
     Pricing happens here rather than at the call sites, so that no path through the
     proxy - success, upstream error, timeout, abandoned stream - can write a row that
-    nobody costed.
+    nobody costed. The embedding the semantic tier may have paid for is priced in the
+    same place and for the same reason.
     """
     await pricebook.apply(record)
+    await pricebook.apply_embedding(record, embedding_tokens, embedding_model)
     # On the root span and in this request's metrics: these are facts about the
     # request, and whoever is looking at a slow trace wants them without opening a
     # child span.

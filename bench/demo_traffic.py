@@ -13,10 +13,16 @@ Four tenants, set up to behave differently on purpose:
     hooli     a budget that runs out part way through, and refusals after that
 
     docker compose up -d --wait
-    OTEL_ENABLED=True uv run uvicorn tollgate.main:app --port 8000   # another terminal
+    # in another terminal
+    OTEL_ENABLED=True CACHE_SEMANTIC_ENABLED=True CACHE_SEMANTIC_THRESHOLD=0.93 \
+        uv run uvicorn tollgate.main:app --port 8000
     uv run python bench/demo_traffic.py --seconds 180
 
-Everything goes to the mock upstream, so it costs nothing.
+Everything goes to the mock upstream, so it costs nothing. 0.93 is the threshold
+bench/cache_sweep.py produced *for the mock's embeddings*, which is what this runs
+against - see bench/results/cache_sweep.txt. It is not the number to use against a real
+provider, and there the sweep found there is no such number; the gateway therefore ships
+with the tier off and no default, and this command states both on purpose.
 """
 
 import argparse
@@ -54,6 +60,15 @@ class Profile:
     # very first request rather than the twentieth.
     max_output_tokens: int | None = None
     budget_microcents: int | None = None
+    # How much of this tenant's traffic is deterministic enough to be cached at all.
+    # The rest names a sampled temperature and is bypassed, which is what gives the
+    # "Bypassed by policy" panel something to show - a hit rate with no bypasses beside
+    # it reads as a cache doing badly rather than a cache being asked the wrong thing.
+    cacheable_share: float = 0.75
+    # Of the cacheable traffic, how much arrives reworded: same question, different
+    # punctuation or capitalisation. Every one of these is an exact miss by
+    # construction, so it is the only traffic the semantic tier can show a hit on.
+    variant_share: float = 0.25
     # A budget given as a rate, so the run length can change without moving the moment
     # it runs out. A fixed total tuned for five minutes is spent in the first ninety
     # seconds of a thirty-minute run, and the panel goes back to a flat band of
@@ -72,6 +87,8 @@ PROFILES = [
         workers=4,
         stream_share=0.3,
         prompts=["Summarise this.", "What is the capital of France?", "[[mock:tokens=120]]"],
+        cacheable_share=0.8,
+        variant_share=0.3,
     ),
     Profile(
         name="globex",
@@ -81,6 +98,10 @@ PROFILES = [
         workers=3,
         stream_share=0.8,
         prompts=["[[mock:tokens=400]]", "[[mock:thinking=200]]", "[[mock:tokens=250]]"],
+        # Long streamed answers, so this is the tenant whose hits exercise the replay
+        # path: a cached response re-emitted as events rather than handed over whole.
+        cacheable_share=0.6,
+        variant_share=0.2,
     ),
     Profile(
         # Throttled, but only somewhat: this fills the rate_limited band on the
@@ -95,6 +116,8 @@ PROFILES = [
         workers=1,
         stream_share=0.2,
         prompts=["Hello.", "[[mock:tokens=60]]"],
+        cacheable_share=0.9,
+        variant_share=0.35,
     ),
     Profile(
         # Enough budget for about half a run at this ceiling, so the panel shows the
@@ -116,6 +139,30 @@ PROFILES = [
 
 # A small share of everything, so the error bands are visible without dominating.
 FAULTS = ["[[mock:error=503]]", "[[mock:error=429]]", "[[mock:slow=700]]"]
+
+# Temperatures for the traffic that is not meant to be cacheable. Above the ceiling, so
+# the gateway declines to look at it - which is a policy decision worth seeing on a panel
+# rather than an absence.
+SAMPLED_TEMPERATURES = [0.2, 0.4, 0.7, 1.0]
+
+
+def reword(text: str, rng: random.Random) -> str:
+    """The same question in a different surface form.
+
+    Punctuation, capitalisation and spacing only. The exact tier refuses to normalise
+    any of these away - they are different bytes, and deciding they mean the same thing
+    is not a hash's call - so each one is a guaranteed exact miss and a candidate for
+    the semantic tier. A directive like [[mock:tokens=400]] is left untouched by all
+    four, which is deliberate: those prompts stay exact-cacheable.
+    """
+    choice = rng.randrange(4)
+    if choice == 0:
+        return text.rstrip("?.! ")
+    if choice == 1:
+        return text[0].upper() + text[1:] if text else text
+    if choice == 2:
+        return text.replace(" ", "  ", 1)
+    return text + " "
 
 
 def budget_for(profile: Profile, seconds: float) -> int | None:
@@ -158,12 +205,27 @@ def body(profile: Profile, rng: random.Random) -> dict[str, object]:
     text = rng.choice(profile.prompts)
     if rng.random() < 0.06:
         text = f"{text} {rng.choice(FAULTS)}"
-    payload: dict[str, object] = {"contents": [{"role": "user", "parts": [{"text": text}]}]}
+
+    config: dict[str, object] = {}
     if profile.max_output_tokens is not None:
-        payload["generationConfig"] = {"maxOutputTokens": profile.max_output_tokens}
+        config["maxOutputTokens"] = profile.max_output_tokens
     elif rng.random() < 0.4:
-        payload["generationConfig"] = {"maxOutputTokens": rng.choice([128, 512, 2048])}
-    return payload
+        config["maxOutputTokens"] = rng.choice([128, 512, 2048])
+
+    # The temperature is what decides whether the cache is allowed to look at this
+    # request at all, so it is set on every one rather than left to the provider's
+    # default - which is 1.0, and would put the whole run in the bypass band.
+    if rng.random() < profile.cacheable_share:
+        config["temperature"] = 0
+        if rng.random() < profile.variant_share:
+            text = reword(text, rng)
+    else:
+        config["temperature"] = rng.choice(SAMPLED_TEMPERATURES)
+
+    return {
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
+        "generationConfig": config,
+    }
 
 
 async def worker(

@@ -1,0 +1,24 @@
+1000 requests per row at temperature 0.0, drawn with a Zipf
+exponent of 1.1 from a pool of N distinct prompts, seed 7, cold cache.
+
+N is the only thing that varies between these rows. A small pool is traffic that
+asks the same handful of questions all day; a large one is traffic that rarely
+repeats itself. It moves the hit rate from 62% to 89% without a line of the
+gateway changing, which is the point: a cache's hit rate is a property of the
+traffic, and what belongs to the gateway is the two latency columns.
+
+  pool  repeats   exact  semantic  hit rate   hit p50  miss p50        paid     avoided   saved
+  2000     62%     615         0     61.5%     14.6ms    121.3ms   $0.053163   $0.076928    59%
+  1000     66%     660         0     66.0%     14.5ms    121.2ms   $0.046368   $0.082190    64%
+   400     72%     719         0     71.9%     14.5ms    121.2ms   $0.039260   $0.090374    70%
+   120     82%     815         0     81.5%     14.4ms    121.1ms   $0.024561   $0.101224    80%
+    40     89%     892         0     89.2%     14.5ms    121.3ms   $0.014568   $0.110840    88%
+
+A hit costs 14.4 ms against 121.1 ms for the call it replaces, which is
+8x, and is the one number here that does not depend on the traffic.
+
+'repeats' is the share of requests that asked something already asked, and so the
+ceiling the hit rate is working against. 'saved' compares what was paid with what
+the identical traffic would have cost with no cache - taken from the ledger, where
+every row carries both what it cost and what it would have cost, rather than from
+a second run against a second sample.

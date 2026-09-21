@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -37,6 +38,7 @@ from starlette.types import ASGIApp
 
 from mock_upstream import main as mock
 from tollgate.auth import generate_key
+from tollgate.cache.service import build_cache
 from tollgate.config import Settings
 from tollgate.db.models import ApiKey, Tenant, UsageRecord
 from tollgate.health import UpstreamProbe
@@ -82,7 +84,7 @@ async def sessionmaker(
     engine = create_async_engine(migrated_database, poolclass=NullPool)
     yield async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE usage_records, api_keys, tenants CASCADE"))
+        await conn.execute(text("TRUNCATE cache_entries, usage_records, api_keys, tenants CASCADE"))
     await engine.dispose()
 
 
@@ -139,6 +141,19 @@ def settings() -> Settings:
 def rate_limiter() -> RateLimiter:
     """The limiter behind the gateway fixtures. Override to test the Redis one."""
     return MemoryRateLimiter()
+
+
+@pytest.fixture
+def cache_settings() -> dict[str, Any]:
+    """Settings overrides for the cache behind the gateway fixtures. Off unless asked.
+
+    Off, because a cache changes what a second identical request does, and most of this
+    suite sends identical requests while measuring something else entirely - ledger rows,
+    retries, spans, token counts. Leaving it on by default would quietly make those tests
+    assert the cache's behaviour instead of the behaviour they were written for, and the
+    ones that still passed would be the worrying part. tests/test_cache.py turns it on.
+    """
+    return {"cache_enabled": False}
 
 
 @pytest.fixture
@@ -316,6 +331,7 @@ async def gateway(
     mock_upstream: None,
     rate_limiter: RateLimiter,
     budget_redis: "Redis | None",
+    cache_settings: dict[str, Any],
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A client for the gateway, wired the way lifespan wires it, but to test resources."""
     upstream = create_upstream_client(settings, transport=upstream_transport)
@@ -335,6 +351,11 @@ async def gateway(
         default_max_output_tokens=8192,
         month_ttl_s=40 * 24 * 60 * 60,
     )
+    # Through build_cache, so a test exercises the same construction production does
+    # and expresses its overrides in the vocabulary of the .env file.
+    app.state.cache = build_cache(
+        settings.model_copy(update=cache_settings), sessionmaker, upstream
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://tollgate"
     ) as client:
@@ -350,6 +371,7 @@ async def live_gateway(
     mock_upstream: None,
     rate_limiter: RateLimiter,
     budget_redis: "Redis | None",
+    cache_settings: dict[str, Any],
 ) -> AsyncIterator[httpx.AsyncClient]:
     """The gateway behind a real HTTP server on a loopback port.
 
@@ -374,6 +396,11 @@ async def live_gateway(
         lease_s=300.0,
         default_max_output_tokens=8192,
         month_ttl_s=40 * 24 * 60 * 60,
+    )
+    # Through build_cache, so a test exercises the same construction production does
+    # and expresses its overrides in the vocabulary of the .env file.
+    app.state.cache = build_cache(
+        settings.model_copy(update=cache_settings), sessionmaker, upstream
     )
 
     async with serve(app) as url, httpx.AsyncClient(base_url=url, timeout=30) as client:

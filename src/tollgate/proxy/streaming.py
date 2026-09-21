@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from fastapi import Request, Response
@@ -27,6 +28,10 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth import TenantContext
+from tollgate.cache.keys import MISS
+from tollgate.cache.replay import assemble, hit_headers, stream_events
+from tollgate.cache.replay import response_media_type as replay_media_type
+from tollgate.cache.service import CacheService
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
@@ -92,12 +97,15 @@ async def open_upstream_stream(
     raise AssertionError("unreachable")
 
 
-def response_headers(upstream: httpx.Response) -> dict[str, str]:
-    return {
+def response_headers(upstream: httpx.Response, cache_status: str | None = None) -> dict[str, str]:
+    headers = {
         name: value
         for name, value in upstream.headers.items()
         if name.lower() not in DROPPED_RESPONSE_HEADERS
     }
+    if cache_status is not None:
+        headers.update(hit_headers(cache_status))
+    return headers
 
 
 async def proxy_stream_generate_content(
@@ -108,6 +116,7 @@ async def proxy_stream_generate_content(
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     pricebook: PriceBook = request.app.state.pricebook
     budget: BudgetGuard = request.app.state.budget
+    cache: CacheService = request.app.state.cache
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -125,6 +134,67 @@ async def proxy_stream_generate_content(
     # so what is claimed here is an estimate built from the request's own ceiling; the
     # settlement at the end of the stream replaces it with the real figure.
     reservation = await budget.reserve(tenant, model, body)
+
+    sse = is_sse_request(request)
+    lookup = await cache.lookup(
+        tenant_id=tenant.tenant_id,
+        model=model,
+        query_items=list(request.query_params.multi_items()),
+        body=body,
+    )
+    record.cache_status = lookup.status
+    record.cache_similarity = lookup.similarity
+
+    # --- a hit: no upstream, no span for one, and a stream built here --------------------
+
+    if lookup.entry is not None:
+        entry = lookup.entry
+        record.status_code = 200
+        record.error_source = record.error_code = None
+        record.input_tokens = entry.input_tokens
+        record.output_tokens = entry.output_tokens
+        record.thoughts_tokens = entry.thoughts_tokens
+
+        async def replay() -> AsyncIterator[bytes]:
+            """The stored answer, re-emitted as events. See cache/replay.py.
+
+            The bookkeeping is the same as the relay below and for the same reasons: a
+            caller can hang up part way through a replay too, and the ledger row is owed
+            either way - at zero cost, since nothing was generated.
+            """
+            try:
+                for chunk in stream_events(entry, sse=sse):
+                    yield chunk
+            except (asyncio.CancelledError, GeneratorExit):
+                record.client_disconnected = True
+                raise
+            finally:
+                await run_even_if_cancelled(
+                    finish_cached(), "ledger row and budget settlement for a cached stream"
+                )
+
+        async def finish_cached() -> None:
+            # upstream_latency_ms stays NULL: there was no upstream call to time.
+            await write_usage(
+                sessionmaker,
+                pricebook,
+                record,
+                embedding_tokens=lookup.embedding_tokens,
+                embedding_model=cache.embedding_model,
+            )
+            await budget.settle(reservation, record.cost_microcents)
+
+        return StreamingResponse(
+            replay(),
+            status_code=200,
+            media_type=replay_media_type(sse),
+            headers=hit_headers(lookup.status or ""),
+        )
+
+    # Started after the cache has been consulted, so the timings below cover the upstream
+    # stream and not the lookup that preceded it. With the semantic tier on that lookup
+    # is an embedding round trip, and folding it in here would report it as time to first
+    # token - a number that is meant to say how long the caller waited on the model.
     started = time.perf_counter()
 
     def elapsed_ms() -> int:
@@ -149,7 +219,13 @@ async def proxy_stream_generate_content(
         if record.upstream_ttfb_ms is not None:
             upstream_span.set_attribute("tollgate.upstream.ttfb_ms", record.upstream_ttfb_ms)
         upstream_span.end()
-        await write_usage(sessionmaker, pricebook, record)
+        await write_usage(
+            sessionmaker,
+            pricebook,
+            record,
+            embedding_tokens=lookup.embedding_tokens,
+            embedding_model=cache.embedding_model,
+        )
         await budget.settle(reservation, record.cost_microcents)
 
     # --- before the first byte: ordinary error handling still applies --------------------
@@ -179,29 +255,60 @@ async def proxy_stream_generate_content(
         record.upstream_latency_ms = elapsed_ms()
         await finish()
         return Response(
-            content=payload, status_code=upstream.status_code, headers=response_headers(upstream)
+            content=payload,
+            status_code=upstream.status_code,
+            headers=response_headers(upstream, lookup.status),
         )
 
     # --- from here the caller has a 200; problems travel inside the stream ---------------
 
-    sse = is_sse_request(request)
     record.status_code = 200
     record.error_source = record.error_code = None
 
     async def relay() -> AsyncIterator[bytes]:
         scanner = StreamScanner(sse=sse)
+        # The copy kept so this response can be cached, and the running count that bounds
+        # it. Phase 3's promise is that memory stays flat under a long stream, and a bound
+        # is exactly what keeps that promise: past `max_response_bytes` the collection is
+        # dropped, the memory goes back, and the relay carries on having noticed nothing.
+        # A response too large to cache is relayed and simply not stored.
+        #
+        # The bytes counted are the raw ones arriving from the upstream, which is more
+        # than the parsed events retained - so the bound is conservative in the direction
+        # that matters.
+        collected: list[dict[str, Any]] | None = [] if lookup.status == MISS else None
+        collected_bytes = 0
         try:
             async for chunk in upstream.aiter_raw():
                 if record.upstream_ttfb_ms is None:
                     record.upstream_ttfb_ms = elapsed_ms()
+                if collected is not None:
+                    collected_bytes += len(chunk)
+                    if collected_bytes > cache.max_response_bytes:
+                        collected = None
                 for event in scanner.feed(chunk):
                     apply_usage_payload(record, event)  # running totals; the last one wins
+                    if collected is not None:
+                        collected.append(event)
                     if status := upstream_error_status(event):
                         # The upstream reported a failure inside the stream. Relay it as
                         # it is (the caller's SDK will raise on it) and record it: the
                         # response is incomplete, whatever the 200 says.
                         record.error_source, record.error_code = "upstream", status
+                        collected = None  # never cache an answer that did not finish
                 yield chunk  # waits for the caller to take it: backpressure, not buffering
+
+            # Only here, after the loop has run to its end without raising. Every other
+            # way out of this generator - a dropped upstream, a caller hanging up - leaves
+            # a partial response, and a partial response is the one thing a cache must
+            # never keep: it would be replayed as though it were whole.
+            if collected and record.error_code is None:
+                await cache.store(
+                    lookup,
+                    tenant_id=tenant.tenant_id,
+                    model=model,
+                    response=assemble(collected),
+                )
         except Exception as exc:
             # A 200 and some events are already out, so the status code can't say this.
             # Anything that goes wrong here (a dropped upstream connection, a bug of ours)
@@ -225,7 +332,7 @@ async def proxy_stream_generate_content(
     return StreamingResponse(
         relay(),
         status_code=200,
-        headers=response_headers(upstream),
+        headers=response_headers(upstream, lookup.status),
         media_type=upstream.headers.get("content-type"),
     )
 

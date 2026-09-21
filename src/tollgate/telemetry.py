@@ -15,7 +15,9 @@ everything, with a child for each stage that can be slow or can refuse:
       authenticate          hashed key to tenant, one query
       rate_limit            token bucket, memory or Redis
       budget.reserve        ledger read or Redis script
-      upstream              the provider call, retries included
+      cache.lookup          the normalised request hash, one query
+      upstream              the provider call, retries included - absent on a hit
+      cache.store           the fresh response, kept for next time
       ledger.write          the usage row, priced
       budget.settle         reservation released
 
@@ -63,6 +65,7 @@ from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Span, Status, StatusCode
 from opentelemetry.util.types import AttributeValue
 
+from tollgate.cache.keys import HIT_STATUSES
 from tollgate.config import Settings
 
 logger = logging.getLogger("tollgate.telemetry")
@@ -98,9 +101,23 @@ OVERHEAD = "tollgate.overhead"
 TOKENS = "tollgate.tokens"
 SPEND = "tollgate.spend"
 UPSTREAM_ATTEMPTS = "tollgate.upstream.attempts"
+CACHE_LOOKUPS = "tollgate.cache.lookups"
+CACHE_SAVINGS = "tollgate.cache.savings"
+CACHE_EMBEDDING_SPEND = "tollgate.cache.embedding.spend"
 
 INSTRUMENT_NAMES = frozenset(
-    {REQUESTS, REQUEST_DURATION, UPSTREAM_DURATION, OVERHEAD, TOKENS, SPEND, UPSTREAM_ATTEMPTS}
+    {
+        REQUESTS,
+        REQUEST_DURATION,
+        UPSTREAM_DURATION,
+        OVERHEAD,
+        TOKENS,
+        SPEND,
+        UPSTREAM_ATTEMPTS,
+        CACHE_LOOKUPS,
+        CACHE_SAVINGS,
+        CACHE_EMBEDDING_SPEND,
+    }
 )
 
 requests_total = meter.create_counter(
@@ -123,6 +140,26 @@ spend_total = meter.create_counter(
 )
 upstream_attempts = meter.create_counter(
     UPSTREAM_ATTEMPTS, unit="1", description="Upstream sends, retries included."
+)
+# A separate counter rather than a `cache` label on `requests_total`. A label there would
+# multiply the cardinality of every existing series by the number of cache outcomes, to
+# answer one question; a counter of its own answers it at the cost of one series per
+# outcome, and leaves the panels built in phase 5 reading exactly what they read before.
+cache_lookups = meter.create_counter(
+    CACHE_LOOKUPS, unit="1", description="Cache outcomes by tenant, model and result."
+)
+cache_savings = meter.create_counter(
+    CACHE_SAVINGS,
+    unit="1",
+    description="Micro-cents a cache hit did not spend, by tenant, model and tier.",
+)
+# What the semantic tier spent looking, found or not. Its own counter rather than a
+# negative saving: the two answer different questions, and a dashboard that showed only
+# the net would hide a tier spending heavily to save slightly more.
+cache_embedding_spend = meter.create_counter(
+    CACHE_EMBEDDING_SPEND,
+    unit="1",
+    description="Micro-cents spent on embeddings, by tenant and model.",
 )
 
 
@@ -301,17 +338,29 @@ def record_usage(record: Any) -> None:
             "tollgate.error.source": record.error_source,
             "tollgate.error.code": record.error_code,
             "tollgate.client_disconnected": bool(record.client_disconnected),
+            "tollgate.cache.status": record.cache_status,
+            "tollgate.cache.similarity": record.cache_similarity,
+            "tollgate.cache.cost_avoided_microcents": record.cost_avoided_microcents,
+            "tollgate.cache.embedding_cost_microcents": record.embedding_cost_microcents,
         }
     )
     current = facts()
     current.model = record.model
     current.method = record.method
+    current.cache_status = record.cache_status
+    current.cost_avoided_microcents = record.cost_avoided_microcents or 0
+    current.embedding_cost_microcents = record.embedding_cost_microcents or 0
     # bool(), not the raw value: a column default is applied by the database at
     # INSERT, so this attribute is still None on an unflushed row and would reach
     # the metric as the label "null" rather than "false".
     current.streamed = bool(record.streamed)
     current.attempts = record.upstream_attempts
-    current.upstream_ms = record.upstream_latency_ms
+    # A cache hit made no upstream call, so the ledger keeps NULL: there is no latency to
+    # report for something that did not happen. The histogram takes zero instead, because
+    # leaving it unset would drop the request from the overhead percentiles entirely - and
+    # the requests being dropped would be the fastest ones, which is how a cache makes a
+    # p99 look worse by making the service better.
+    current.upstream_ms = 0.0 if record.cache_status in HIT_STATUSES else record.upstream_latency_ms
     current.cost_microcents = record.cost_microcents or 0
     current.outcome = outcome_for(record.status_code, record.error_source)
     for kind, count in (
@@ -368,6 +417,13 @@ class RequestFacts:
     attempts: int = 0
     tokens: dict[str, int] = field(default_factory=dict)
     cost_microcents: int = 0
+    cache_status: str | None = None
+    cost_avoided_microcents: int = 0
+    embedding_cost_microcents: int = 0
+    # Time waiting on the embedding model, which is provider time and not this
+    # gateway's. Kept apart from `upstream_ms` because it is paid before the request
+    # reaches the upstream at all - and on a cache hit, instead of reaching it.
+    embedding_ms: float = 0.0
 
 
 facts_var: ContextVar[RequestFacts | None] = ContextVar("request_facts", default=None)
@@ -419,14 +475,37 @@ def emit_request_metrics(tenant: str | None, status_code: int, total_ms: float) 
     requests_total.add(1, labels)
     request_duration.record(total_ms, labels)
 
-    if current.upstream_ms is not None:
-        upstream_duration.record(current.upstream_ms, labels)
-        # Clamped at zero: the two are measured by different clocks at different
+    if current.upstream_ms is not None or current.embedding_ms:
+        # Both round trips to the provider, added together. The semantic tier's
+        # embedding call is time spent waiting on the upstream exactly as the
+        # generation call is, and the only reason it needs saying is that it lives in a
+        # different span: leaving it out of this sum would file a 100 ms provider wait
+        # as gateway overhead, which is the one number this project is judged on. That
+        # would have made a cache lookup look like a performance regression in the
+        # service, put the phase 5 alert permanently in alarm, and broken comparability
+        # with the phase 1 baseline - which was measured before either call existed.
+        provider_ms = (current.upstream_ms or 0.0) + current.embedding_ms
+        upstream_duration.record(provider_ms, labels)
+        # Clamped at zero: the parts are measured by different clocks at different
         # points, and a negative overhead would poison the histogram it feeds.
-        overhead_duration.record(max(0.0, total_ms - current.upstream_ms), labels)
+        overhead_duration.record(max(0.0, total_ms - provider_ms), labels)
     if current.attempts:
         upstream_attempts.add(current.attempts, labels)
     for kind, count in current.tokens.items():
         tokens_total.add(count, {**labels, "kind": kind})
     if current.cost_microcents:
         spend_total.add(current.cost_microcents, labels)
+    if current.cache_status is not None:
+        # Counted for every request the cache saw, including the ones it turned away, so
+        # a hit rate has an honest denominator. Without the bypasses in it, a gateway
+        # whose traffic is almost all sampled would report a flattering hit rate over the
+        # handful of requests that were ever eligible.
+        cache_lookups.add(1, {**labels, "result": current.cache_status})
+    if current.cost_avoided_microcents:
+        # Labelled by tier, because an exact hit and a semantic hit save the same money
+        # for very different outlay: only the second one had to pay for an embedding.
+        cache_savings.add(
+            current.cost_avoided_microcents, {**labels, "tier": current.cache_status or "none"}
+        )
+    if current.embedding_cost_microcents:
+        cache_embedding_spend.add(current.embedding_cost_microcents, labels)

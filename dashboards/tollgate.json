@@ -960,6 +960,462 @@
           "fields": ""
         }
       }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Cache hit rate",
+      "description": "Hits as a share of every request the cache saw, bypasses included. The denominator is the honest one on purpose: a gateway whose traffic is almost all sampled would otherwise report a flattering rate over the handful of requests that were ever eligible for a hit.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_cache_lookups_total{tenant=~\"$tenant\", result=~\"exact|semantic\"}[$__rate_interval])) / clamp_min(sum(rate(tollgate_cache_lookups_total{tenant=~\"$tenant\"}[$__rate_interval])), 0.0001)",
+          "legendFormat": "cache hit rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Spend avoided / 1k requests",
+      "description": "What the cache saved over this range, per thousand requests, in dollars. Priced at today's rates from the token counts the provider reported when each answer was generated - so it answers 'what would this month have cost', which is the same question the spend beside it answers.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(tollgate_cache_savings_total{tenant=~\"$tenant\"}[$__range])) / clamp_min(sum(increase(tollgate_requests_total{tenant=~\"$tenant\"}[$__range])), 0.0001) * 1000 / 100000000",
+          "legendFormat": "spend avoided / 1k requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Bypassed by policy",
+      "description": "Requests the cache refused to look at, almost always because they name a temperature above the ceiling. Not a fault: it is the gateway declining to decide, on a tenant's behalf, that a sampled request has one right answer. A high number here is the reason a hit rate looks low.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_cache_lookups_total{tenant=~\"$tenant\", result=\"bypass\"}[$__rate_interval])) / clamp_min(sum(rate(tollgate_cache_lookups_total{tenant=~\"$tenant\"}[$__rate_interval])), 0.0001)",
+          "legendFormat": "bypassed by policy"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Spend avoided, range",
+      "description": "Total dollars the cache did not spend over the selected range.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(tollgate_cache_savings_total{tenant=~\"$tenant\"}[$__range])) / 100000000",
+          "legendFormat": "spend avoided, range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Cache outcomes",
+      "description": "Requests a minute by what the cache did with them. 'miss' and a hit tier are the two that move with traffic; a step change in 'bypass' means a tenant changed how it calls the gateway, not that anything here broke.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(tollgate_cache_lookups_total{tenant=~\"$tenant\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Spend, paid against avoided",
+      "description": "Dollars an hour leaving for the provider, and dollars an hour the cache kept. The pair is what makes the cache's value legible: the second line is only worth anything relative to the first.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_spend_total{tenant=~\"$tenant\"}[$__rate_interval])) * 3600 / 100000000",
+          "legendFormat": "paid upstream"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(tollgate_cache_savings_total{tenant=~\"$tenant\"}[$__rate_interval])) * 3600 / 100000000",
+          "legendFormat": "avoided by the cache"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Hits by tier",
+      "description": "Exact hits against semantic hits, per minute. The two are worth separating because they cost different things to find: an exact hit is one indexed read, and a semantic hit was preceded by an embedding call that every miss under that tier also paid for.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(tollgate_cache_lookups_total{tenant=~\"$tenant\", result=~\"exact|semantic\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Semantic tier, net",
+      "description": "What the semantic tier saved over this range, minus what it spent on embeddings to find it - including the embeddings for every request that found nothing. Negative means the tier is costing more than it saves on this traffic, which is the number that decides whether to leave it on. Reads zero while the tier is off, which is how the gateway ships.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(increase(tollgate_cache_savings_total{tenant=~\"$tenant\", tier=\"semantic\"}[$__range])) - sum(increase(tollgate_cache_embedding_spend_total{tenant=~\"$tenant\"}[$__range]))) / 100000000",
+          "legendFormat": "net"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "text",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Spent looking",
+      "description": "Dollars spent on embeddings over this range. Paid on every request the semantic tier examined, whether or not it found anything, which is why it is shown rather than folded into the saving beside it.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(tollgate_cache_embedding_spend_total{tenant=~\"$tenant\"}[$__range])) / 100000000",
+          "legendFormat": "embeddings"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
     }
   ]
 }

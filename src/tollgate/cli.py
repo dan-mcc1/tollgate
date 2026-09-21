@@ -9,6 +9,9 @@ uv run tollgate set-limits acme --rpm 120 --burst 240
 uv run tollgate set-budget acme --usd 25
 uv run tollgate prices
 uv run tollgate set-price gemini-3.7-flash --input 0.30 --output 2.50
+uv run tollgate cache
+uv run tollgate cache-prune
+uv run tollgate cache-clear acme
 """
 
 import argparse
@@ -20,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from tollgate.auth import generate_key
+from tollgate.cache import exact
 from tollgate.config import get_settings
 from tollgate.db.models import ApiKey, ModelPrice, Tenant
 from tollgate.usage import MICROCENTS_PER_USD, format_usd
@@ -158,6 +162,29 @@ async def set_price(session: AsyncSession, args: argparse.Namespace) -> None:
     print(f"Priced {args.model} from {effective_from:%Y-%m-%d %H:%M} UTC")
 
 
+async def show_cache(session: AsyncSession) -> None:
+    """What the cache holds, per tenant. Counts only: no prompt or response is printed,
+    and none could be - the request is stored as a hash and cannot be read back."""
+    rows = await exact.stats(session)
+    if not rows:
+        print("The cache is empty.")
+        return
+    print(f"{'tenant':<24} {'entries':>9} {'hits':>8} {'expired':>9}")
+    for row in rows:
+        print(f"{row.tenant:<24} {row.entries:>9} {row.hits:>8} {row.expired:>9}")
+
+
+async def prune_cache(session: AsyncSession) -> None:
+    removed = await exact.prune(session)
+    print(f"Removed {removed} expired {'entry' if removed == 1 else 'entries'}")
+
+
+async def clear_cache(session: AsyncSession, name: str) -> None:
+    tenant = await get_tenant(session, name)
+    removed = await exact.clear(session, tenant.id)
+    print(f"Removed {removed} {'entry' if removed == 1 else 'entries'} for {name}")
+
+
 async def run(args: argparse.Namespace) -> None:
     engine = create_async_engine(get_settings().database_url)
     try:
@@ -181,6 +208,12 @@ async def run(args: argparse.Namespace) -> None:
                     await list_prices(session)
                 case "set-price":
                     await set_price(session, args)
+                case "cache":
+                    await show_cache(session)
+                case "cache-prune":
+                    await prune_cache(session)
+                case "cache-clear":
+                    await clear_cache(session, args.tenant)
     finally:
         await engine.dispose()
 
@@ -215,4 +248,7 @@ def main() -> None:
     price.add_argument(
         "--from", dest="effective_from", help="ISO timestamp it takes effect (default: now)"
     )
+    commands.add_parser("cache", help="what the response cache is holding, per tenant")
+    commands.add_parser("cache-prune", help="delete entries that have expired")
+    commands.add_parser("cache-clear", help="drop one tenant's entries").add_argument("tenant")
     asyncio.run(run(parser.parse_args()))

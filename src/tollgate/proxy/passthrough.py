@@ -5,6 +5,7 @@ provider key is used, and nothing from the upstream response that could carry it
 """
 
 import asyncio
+import json
 import random
 import time
 
@@ -13,6 +14,10 @@ from fastapi import Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.auth import TenantContext
+from tollgate.cache.exact import CachedResponse
+from tollgate.cache.keys import request_payload
+from tollgate.cache.replay import hit_headers
+from tollgate.cache.service import CacheService
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
@@ -118,12 +123,38 @@ def build_upstream_request(
     return client.build_request("POST", path, content=body, headers=headers, params=params)
 
 
-def to_response(upstream: httpx.Response) -> Response:
+def serve_from_cache(record: UsageRecord, entry: CachedResponse, status: str) -> Response:
+    """Answer from an entry the gateway already holds.
+
+    The token counts are the ones the upstream reported when this answer was generated,
+    so the ledger row says what the request would have consumed. Pricing turns that into
+    `cost_avoided_microcents` and leaves `cost_microcents` at zero - the tenant is not
+    charged twice for one generation. See PriceBook.apply.
+    """
+    record.status_code = 200
+    record.error_source = record.error_code = None
+    record.input_tokens = entry.input_tokens
+    record.output_tokens = entry.output_tokens
+    record.thoughts_tokens = entry.thoughts_tokens
+    return Response(
+        content=json.dumps(entry.response, ensure_ascii=False).encode(),
+        status_code=200,
+        media_type="application/json",
+        headers=hit_headers(status),
+    )
+
+
+def to_response(upstream: httpx.Response, cache_status: str | None = None) -> Response:
     headers = {
         name: value
         for name, value in upstream.headers.items()
         if name.lower() not in DROPPED_RESPONSE_HEADERS
     }
+    # On every request the cache saw, not only the ones it answered. A caller debugging
+    # why its traffic is not being cached needs to see "bypass" as much as "hit", and a
+    # benchmark needs to count outcomes without reading the ledger.
+    if cache_status is not None:
+        headers.update(hit_headers(cache_status))
     return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
 
 
@@ -135,6 +166,7 @@ async def proxy_generate_content(
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
     pricebook: PriceBook = request.app.state.pricebook
     budget: BudgetGuard = request.app.state.budget
+    cache: CacheService = request.app.state.cache
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -150,9 +182,27 @@ async def proxy_generate_content(
     # Before anything reaches the upstream. A refusal here costs nothing and writes no
     # ledger row, because the request was never sent and so was never spent.
     reservation = await budget.reserve(tenant, model, body)
+
+    # Then ask the cache, which may make the upstream call unnecessary. See the note in
+    # cache/service.py on why this comes after the reservation rather than before it.
+    lookup = await cache.lookup(
+        tenant_id=tenant.tenant_id,
+        model=model,
+        query_items=list(request.query_params.multi_items()),
+        body=body,
+    )
+    record.cache_status = lookup.status
+    record.cache_similarity = lookup.similarity
+
+    # Started after the cache has been consulted, so `upstream_latency_ms` times the
+    # upstream call and nothing else. Starting it earlier would fold the lookup - and,
+    # with the semantic tier on, a whole embedding round trip - into a column named for
+    # the provider, which is read as provider time by the dashboard and the README alike.
     started = time.perf_counter()
 
     try:
+        if lookup.entry is not None:
+            return serve_from_cache(record, lookup.entry, lookup.status or "")
         upstream_request = build_upstream_request(
             client, request, settings, f"/v1beta/models/{model}:{method}", body
         )
@@ -179,12 +229,22 @@ async def proxy_generate_content(
         if response.is_success:
             record.error_source = record.error_code = None
             apply_usage_metadata(record, response.content)
+            # Offered to the cache before the response is handed back, so the next
+            # identical request finds it. The ledger write below is already on this path,
+            # so this is a second insert rather than the first; `store` refuses quietly
+            # when the response is not one worth keeping, and never raises.
+            await cache.store(
+                lookup,
+                tenant_id=tenant.tenant_id,
+                model=model,
+                response=request_payload(response.content),
+            )
         else:
             record.error_source = "upstream"
             record.error_code = (
                 upstream_error_code(response.content) or f"http_{response.status_code}"
             )
-        return to_response(response)
+        return to_response(response, lookup.status)
 
     except GatewayError as exc:
         record.status_code = exc.status_code
@@ -192,9 +252,19 @@ async def proxy_generate_content(
         record.error_code = exc.code
         raise
     finally:
-        record.upstream_latency_ms = round((time.perf_counter() - started) * 1000)
+        if lookup.entry is None:
+            # Left NULL on a hit: no upstream call was made, and zero would read as one
+            # that returned instantly. telemetry.record_usage explains what the overhead
+            # histogram does with that.
+            record.upstream_latency_ms = round((time.perf_counter() - started) * 1000)
         # exactly one row, priced, whatever happened above
-        await write_usage(sessionmaker, pricebook, record)
+        await write_usage(
+            sessionmaker,
+            pricebook,
+            record,
+            embedding_tokens=lookup.embedding_tokens,
+            embedding_model=cache.embedding_model,
+        )
         await budget.settle(reservation, record.cost_microcents)
 
 

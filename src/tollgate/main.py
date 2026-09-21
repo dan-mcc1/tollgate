@@ -9,6 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from tollgate.auth import TenantContext
+from tollgate.cache.service import build_cache
 from tollgate.config import get_settings
 from tollgate.errors import GatewayError, handle_gateway_error
 from tollgate.health import UpstreamProbe
@@ -45,6 +46,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.budget = build_budget_guard(
         settings, app.state.sessionmaker, app.state.pricebook, redis
     )
+    # Postgres-backed, so it needs nothing of its own to close. It shares the engine
+    # above: a cache with its own pool would compete with the ledger for connections,
+    # and the ledger is the one that must not wait.
+    app.state.cache = build_cache(settings, app.state.sessionmaker, http_client)
 
     try:
         yield

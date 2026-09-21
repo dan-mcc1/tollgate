@@ -45,6 +45,20 @@ def price(**rates: int) -> Price:
 # --- money is an integer, everywhere ---------------------------------------------------
 
 
+# Columns that are genuinely a measurement rather than an amount owed to anybody, and
+# may therefore be floats. Every entry is a deliberate act: the blanket rule below is
+# what catches `spend: Mapped[float]` added in a hurry, so the way past it is to write
+# the column down here, next to the reason, where a reviewer has to look at it.
+NOT_MONEY = {
+    # Cosine similarity, 0 to 1. Nothing is owed in it, nothing is summed in it, and it
+    # is written once from what pgvector computed rather than accumulated.
+    "usage_records.cache_similarity",
+}
+
+# Anything named like an amount. These may never be floats, exception list or not.
+MONEY_WORDS = ("cost", "spend", "price", "budget", "microcents", "usd", "amount")
+
+
 def test_no_column_anywhere_is_a_float() -> None:
     """Money is integer micro-cents. A float column would make cost errors small, silent
     and impossible to reconstruct months later, so the build fails instead of drifting.
@@ -53,12 +67,40 @@ def test_no_column_anywhere_is_a_float() -> None:
     the failure mode is someone adding `spend: Mapped[float]` and nobody noticing.
     """
     offenders = [
+        name
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, (Float, Numeric))
+        and (name := f"{table.name}.{column.name}") not in NOT_MONEY
+    ]
+    assert offenders == []
+
+
+def test_nothing_that_sounds_like_money_is_a_float() -> None:
+    """The rule the one above is a proxy for, stated directly.
+
+    The exception list exists so that a measurement does not have to be contorted into
+    an integer, and this is what stops it being used to sneak an amount through: a
+    column named for money is refused whether or not somebody listed it.
+    """
+    offenders = [
         f"{table.name}.{column.name}"
         for table in Base.metadata.tables.values()
         for column in table.columns
         if isinstance(column.type, (Float, Numeric))
+        and any(word in column.name.lower() for word in MONEY_WORDS)
     ]
     assert offenders == []
+
+
+def test_every_listed_exception_still_exists() -> None:
+    """An exception that outlives its column is a hole nobody meant to leave open."""
+    columns = {
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+    }
+    assert columns >= NOT_MONEY, f"listed but gone: {NOT_MONEY - columns}"
 
 
 def test_money_columns_are_big_integers() -> None:

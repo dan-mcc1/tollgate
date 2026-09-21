@@ -187,15 +187,32 @@ def test_the_dashboard_file_is_what_terraform_applies() -> None:
     )
 
 
-def test_the_committed_screenshot_matches_the_committed_dashboard() -> None:
-    """The README shows a picture of this dashboard, and a picture is the one artefact
+def test_the_committed_screenshots_match_the_committed_dashboard() -> None:
+    """The README shows pictures of this dashboard, and a picture is the one artefact
     that cannot be regenerated from the repository. If the JSON has been edited since
-    the screenshot was taken, the page shows a dashboard that no longer exists."""
-    screenshot = DASHBOARD.parent / "tollgate.png"
+    they were taken, the page shows a dashboard that no longer exists.
 
-    assert screenshot.exists(), "no screenshot: see the Observability section of the README"
-    assert screenshot.read_bytes().startswith(PNG_MAGIC), "not a PNG"
-    assert screenshot.stat().st_mtime >= DASHBOARD.stat().st_mtime, (
-        "dashboards/tollgate.json changed after the screenshot was taken; retake it so "
-        "the README shows the dashboard this repository actually builds"
-    )
+    Every PNG in the folder is checked rather than one named file. The dashboard outgrew
+    a single screen at twenty panels, so it is captured in two - and a rule that only
+    looked at the first would let the second go stale silently, which is precisely the
+    failure this test exists to catch.
+    """
+    screenshots = sorted(DASHBOARD.parent.glob("*.png"))
+
+    assert screenshots, "no screenshot: see the Observability section of the README"
+    for screenshot in screenshots:
+        name = screenshot.name
+        assert screenshot.read_bytes().startswith(PNG_MAGIC), f"{name} is not a PNG"
+        assert screenshot.stat().st_mtime >= DASHBOARD.stat().st_mtime, (
+            f"dashboards/tollgate.json changed after {name} was taken; retake it so the "
+            "README shows the dashboard this repository actually builds"
+        )
+
+
+def test_every_screenshot_is_shown_in_the_readme() -> None:
+    """A screenshot nobody references is one nobody notices going stale, and the test
+    above would keep insisting it be retaken forever."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for screenshot in sorted(DASHBOARD.parent.glob("*.png")):
+        assert f"dashboards/{screenshot.name}" in readme, f"{screenshot.name} is unreferenced"

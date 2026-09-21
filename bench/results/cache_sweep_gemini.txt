@@ -1,0 +1,63 @@
+51 labelled prompt pairs: 22 that may share an answer and
+29 that may not. Embeddings from gemini-embedding-001 at https://generativelanguage.googleapis.com.
+
+A false hit is a pair the threshold called the same when it was not - a caller
+receiving a confident answer to a question nobody asked. A missed hit is one
+upstream call. They are not the same kind of mistake, which is why the operating
+point is chosen by precision and recall is whatever it turns out to be.
+
+ thresh  precision   recall      F1  false hits  false hit rate
+   0.30      0.431    1.000   0.603          29          56.9%
+   0.35      0.431    1.000   0.603          29          56.9%
+   0.40      0.431    1.000   0.603          29          56.9%
+   0.45      0.431    1.000   0.603          29          56.9%
+   0.50      0.431    1.000   0.603          29          56.9%
+   0.55      0.431    1.000   0.603          29          56.9%
+   0.60      0.431    1.000   0.603          29          56.9%
+   0.65      0.440    1.000   0.611          28          54.9%
+   0.70      0.440    1.000   0.611          28          54.9%
+   0.75      0.458    1.000   0.629          26          51.0%
+   0.80      0.458    1.000   0.629          26          51.0%
+   0.85      0.458    1.000   0.629          26          51.0%
+   0.90      0.488    0.955   0.646          22          43.1%
+   0.95      0.630    0.773   0.694          10          19.6%
+   1.00      1.000    0.000   0.000           0           0.0%
+
+NO USABLE THRESHOLD.
+
+There is no cut-off that finds a single true pair without also making a false
+hit, because the classes overlap: the highest-scoring pair that must not match
+scores 0.9913 (direction_swap), while the lowest-scoring pair that
+must match scores 0.8611 (abbreviation). Every
+threshold between them is wrong in one direction or the other, and no threshold
+outside them is useful.
+
+    must not match, highest:  0.9913  'Convert JSON to YAML.'
+                                      'Convert YAML to JSON.'
+    must match, lowest:       0.8611  'What does SSE stand for?'
+                                      'What does server-sent events stand for?'
+
+The conclusion is about the embedding model, not about the cache: these
+embeddings do not carry the distinctions the negatives turn on. The semantic
+tier therefore stays off (CACHE_SEMANTIC_ENABLED=False) until a sweep against
+embeddings that can separate them produces a threshold.
+
+By kind, mean similarity:
+
+  may share  word_order     n=2   mean 0.9980  min 0.9974  max 0.9986
+  may share  whitespace     n=2   mean 0.9972  min 0.9971  max 0.9972
+  may share  case           n=2   mean 0.9964  min 0.9931  max 0.9997
+  may share  punctuation    n=2   mean 0.9951  min 0.9942  max 0.9959
+  may share  synonym        n=2   mean 0.9905  min 0.9871  max 0.9938
+  may share  paraphrase     n=6   mean 0.9751  min 0.9158  max 0.9898
+  may share  filler         n=2   mean 0.9510  min 0.9495  max 0.9525
+  may share  politeness     n=3   mean 0.9501  min 0.9130  max 0.9908
+  may share  abbreviation   n=1   mean 0.8611  min 0.8611  max 0.8611
+  MUST NOT   direction_swap n=3   mean 0.9866  min 0.9776  max 0.9913
+  MUST NOT   tense_swap     n=1   mean 0.9503  min 0.9503  max 0.9503
+  MUST NOT   negation       n=4   mean 0.9411  min 0.8845  max 0.9630
+  MUST NOT   number_swap    n=4   mean 0.9343  min 0.9026  max 0.9713
+  MUST NOT   near_topic     n=6   mean 0.9294  min 0.9034  max 0.9683
+  MUST NOT   scope_change   n=3   mean 0.9160  min 0.8765  max 0.9561
+  MUST NOT   entity_swap    n=5   mean 0.8948  min 0.8708  max 0.9152
+  MUST NOT   unrelated      n=3   mean 0.6909  min 0.6472  max 0.7187

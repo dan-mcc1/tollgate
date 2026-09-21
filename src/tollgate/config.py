@@ -77,6 +77,61 @@ class Settings(BaseSettings):
     # December's total where it left it rather than reseeding from the ledger.
     budget_month_ttl_s: float = 40 * 24 * 60 * 60
 
+    # Caching. Entries are always scoped to one tenant; there is no setting for sharing
+    # them, because there is no safe value for it. See the threat model in the README.
+    cache_enabled: bool = True
+    cache_ttl_s: float = 24 * 60 * 60
+    # The highest temperature a request may name and still be cached. Above it the
+    # request bypasses the cache entirely - not looked up, not stored. The default
+    # refuses everything sampled, which is the only default that cannot change what a
+    # tenant's product does behind their back; raising it is a decision with a number
+    # attached, which is why it is a knob rather than a constant.
+    cache_max_temperature: float = 0.0
+    # What a request that names no temperature will be served at. This is a fact about
+    # the upstream, not a preference: Gemini samples at 1.0 when asked for nothing, so
+    # assuming 0 here would cache sampled output under a ceiling meant to forbid it.
+    cache_assumed_temperature: float = 1.0
+    # The most of a streamed response that may be held in order to cache it. A stream is
+    # relayed without buffering; this is the bound on the copy kept alongside for the
+    # cache, and a response that outgrows it is relayed as normal and simply not stored.
+    cache_max_response_bytes: int = 256 * 1024
+
+    # The semantic tier: answering a request from a *similar* one rather than an
+    # identical one. Off by default, and deliberately so. A wrong semantic hit is a
+    # correctness bug, the threshold that avoids one is a property of the embedding
+    # model rather than of this gateway, and no number is safe to ship as a default for
+    # a model nobody has measured. bench/cache_sweep.py is how the number below is
+    # chosen; turn the tier on once it has been run against the embeddings in use.
+    cache_semantic_enabled: bool = False
+    # Cosine similarity, not distance: 1.0 is identical. Below this a stored answer would
+    # be served for a different question.
+    #
+    # There is no default, and that is the point. A threshold is a property of the
+    # embedding model, not of this gateway, and the two sweeps committed under
+    # bench/results/ disagree completely about it: the mock's feature hashing yields
+    # 0.93 with no false hits, while gemini-embedding-001 yields *no* safe value at all -
+    # "Convert JSON to YAML" and "Convert YAML to JSON" score 0.9913, above every genuine
+    # paraphrase in the set. Shipping either number would hand somebody a figure derived
+    # from a model they are not using. Turning the tier on therefore requires stating
+    # one, and bench/cache_sweep.py is what produces it - or reports that there is none.
+    #
+    # The same reasoning as monthly_budget_microcents on Tenant: where there is no honest
+    # value to invent, the setting is empty and the caller has to decide.
+    cache_semantic_threshold: float | None = None
+    cache_embedding_model: str = "gemini-embedding-001"
+    # 768 rather than the 3072 the model can produce. pgvector indexes up to 2000
+    # dimensions, the smaller output is a supported truncation rather than a cut-down
+    # model, and it is a quarter of the storage and distance arithmetic per comparison.
+    cache_embedding_dimensions: int = 768
+    # An embedding call sits between a caller and the answer it is waiting for, and it
+    # is spent whether or not anything is found. Short, because a slow one has already
+    # cost more than the call it was trying to avoid; a timeout is reported as a miss.
+    cache_embedding_timeout_s: float = 2.0
+    # How hard pgvector looks before giving up. Higher finds more true neighbours and
+    # costs more per lookup; too low silently returns nothing for a filtered search.
+    # See the note on filtered vector search in semantic.py.
+    cache_hnsw_ef_search: int = 100
+
     # How long a price inserted by another container can take to come into force here.
     # Prices change a few times a year, so a stale minute costs nothing and saves a
     # database round trip on every single request.

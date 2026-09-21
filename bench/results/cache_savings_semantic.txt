@@ -1,0 +1,38 @@
+1000 requests per row at temperature 0.0, drawn with a Zipf
+exponent of 1.1 from a pool of N distinct prompts, seed 7, cold cache.
+
+N is the only thing that varies between these rows. A small pool is traffic that
+asks the same handful of questions all day; a large one is traffic that rarely
+repeats itself. It moves the hit rate from 69% to 96% without a line of the
+gateway changing, which is the point: a cache's hit rate is a property of the
+traffic, and what belongs to the gateway is the two latency columns.
+
+  pool  repeats   exact  semantic  hit rate   hit p50  miss p50        paid     avoided   saved
+  2000     62%     502       185     68.7%     14.8ms    230.4ms   $0.043446   $0.085096    66%
+  1000     66%     534       199     73.3%     14.7ms    230.2ms   $0.035975   $0.090539    72%
+   400     72%     558       242     80.0%     14.7ms    230.1ms   $0.027648   $0.098570    78%
+   120     82%     558       337     89.5%     14.8ms    230.1ms   $0.013725   $0.108738    89%
+    40     89%     575       385     96.0%     14.8ms    229.9ms   $0.005192   $0.117757    96%
+
+A hit costs 14.7 ms against 230.2 ms for the call it replaces, which is
+16x, and is the one number here that does not depend on the traffic.
+
+'repeats' is the share of requests that asked something already asked, and so the
+ceiling the hit rate is working against. 'saved' compares what was paid with what
+the identical traffic would have cost with no cache - taken from the ledger, where
+every row carries both what it cost and what it would have cost, rather than from
+a second run against a second sample.
+
+The semantic tier was on, so every request the exact tier missed also paid
+for an embedding - found or not. That shows up twice. In latency: the miss
+column above is 230 ms at worst, and it carries an embedding round
+trip that a miss without this tier does not, so the tier makes the requests it
+fails to help measurably slower. And in money, where netting the two is the
+only way to ask whether it earns its keep on this traffic:
+
+  pool  semantic      avoided  spent looking          net
+  2000       185    $0.085096      $0.001399    $0.083698
+  1000       199    $0.090539      $0.001296    $0.089242
+   400       242    $0.098570      $0.001226    $0.097344
+   120       337    $0.108738      $0.001169    $0.107569
+    40       385    $0.117757      $0.001129    $0.116628

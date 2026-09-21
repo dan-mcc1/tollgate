@@ -1,0 +1,58 @@
+51 labelled prompt pairs: 22 that may share an answer and
+29 that may not. Embeddings from gemini-embedding-001 at http://localhost:8001.
+
+A false hit is a pair the threshold called the same when it was not - a caller
+receiving a confident answer to a question nobody asked. A missed hit is one
+upstream call. They are not the same kind of mistake, which is why the operating
+point is chosen by precision and recall is whatever it turns out to be.
+
+ thresh  precision   recall      F1  false hits  false hit rate
+   0.30      0.457    0.955   0.618          25          49.0%
+   0.35      0.457    0.955   0.618          25          49.0%
+   0.40      0.457    0.955   0.618          25          49.0%
+   0.45      0.432    0.864   0.576          25          49.0%
+   0.50      0.432    0.864   0.576          25          49.0%
+   0.55      0.405    0.773   0.531          25          49.0%
+   0.60      0.429    0.682   0.526          20          39.2%
+   0.65      0.452    0.636   0.528          17          33.3%
+   0.70      0.467    0.636   0.538          16          31.4%
+   0.75      0.519    0.636   0.571          13          25.5%
+   0.80      0.667    0.545   0.600           6          11.8%
+   0.85      0.818    0.409   0.545           2           3.9%
+   0.90      0.857    0.273   0.414           1           2.0%
+   0.91      1.000    0.273   0.429           0           0.0%
+   0.92      1.000    0.273   0.429           0           0.0%
+   0.93      1.000    0.273   0.429           0           0.0%
+   0.94      1.000    0.273   0.429           0           0.0%
+   0.95      1.000    0.273   0.429           0           0.0%
+   0.96      1.000    0.273   0.429           0           0.0%
+   0.97      1.000    0.273   0.429           0           0.0%
+   0.98      1.000    0.273   0.429           0           0.0%
+   0.99      1.000    0.273   0.429           0           0.0%
+   1.00      1.000    0.000   0.000           0           0.0%
+
+Lowest threshold with no false hits:  0.91 (recall 27.3%)
+Recommended, with a 0.02 margin:      0.93 (recall 27.3%, false hit rate 0.0%)
+
+    CACHE_SEMANTIC_ENABLED=True
+    CACHE_SEMANTIC_THRESHOLD=0.93
+
+By kind, mean similarity:
+
+  may share  punctuation    n=2   mean 1.0000  min 1.0000  max 1.0000
+  may share  whitespace     n=2   mean 1.0000  min 1.0000  max 1.0000
+  may share  case           n=2   mean 1.0000  min 1.0000  max 1.0000
+  may share  filler         n=2   mean 0.8442  min 0.8321  max 0.8563
+  may share  politeness     n=3   mean 0.8429  min 0.8272  max 0.8563
+  may share  synonym        n=2   mean 0.8286  min 0.8000  max 0.8571
+  may share  word_order     n=2   mean 0.6778  min 0.5556  max 0.8000
+  may share  abbreviation   n=1   mean 0.5547  min 0.5547  max 0.5547
+  may share  paraphrase     n=6   mean 0.4635  min 0.2857  max 0.6228
+  MUST NOT   negation       n=4   mean 0.8005  min 0.7559  max 0.8362
+  MUST NOT   entity_swap    n=5   mean 0.7998  min 0.6923  max 0.9048
+  MUST NOT   number_swap    n=4   mean 0.7306  min 0.5714  max 0.8235
+  MUST NOT   direction_swap n=3   mean 0.6996  min 0.5714  max 0.8000
+  MUST NOT   near_topic     n=6   mean 0.6442  min 0.2857  max 0.8667
+  MUST NOT   tense_swap     n=1   mean 0.6299  min 0.6299  max 0.6299
+  MUST NOT   scope_change   n=3   mean 0.5854  min 0.5556  max 0.6154
+  MUST NOT   unrelated      n=3   mean 0.0836  min 0.0000  max 0.2509
