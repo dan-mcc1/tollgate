@@ -25,9 +25,21 @@ MANIFEST = HERE / "screenshots.json"
 
 
 def dashboard_digest() -> str:
-    """The dashboard as one hash. Bytes, not parsed JSON: a reformat is a change too,
-    and a screenshot taken before one was taken of a different file."""
-    return hashlib.sha256(DASHBOARD.read_bytes()).hexdigest()
+    """The dashboard as one hash, over what it *means* rather than how it is written.
+
+    Parsed and re-serialised canonically rather than hashed as raw bytes. Hashing the
+    bytes is the obvious thing and it is wrong here: `.gitattributes` sets `eol=lf`, so
+    the repository stores LF and a Windows checkout gets CRLF, and the same dashboard
+    then hashes differently on the machine that took the screenshots than on the runner
+    that checks them. That is a test which passes locally and fails in CI forever.
+
+    The trade is that reformatting the file - reindenting, reordering keys - no longer
+    counts as a change. That is the right way round: a screenshot shows what the panels
+    look like, and neither of those alters a single pixel.
+    """
+    content = json.loads(DASHBOARD.read_text(encoding="utf-8"))
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def screenshots() -> list[str]:

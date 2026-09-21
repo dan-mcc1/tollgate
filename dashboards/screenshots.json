@@ -1,6 +1,6 @@
 {
   "dashboard": "tollgate.json",
-  "dashboard_sha256": "e6e86d8e832382d579a7c170dfc67453cdc63a6835f1f72688ae039f7f853851",
+  "dashboard_sha256": "d99c723dfcce47379a46b0e8a62ea0ef3a9491f6db196408eb038e98ae6f8106",
   "screenshots": [
     "tollgate-1.png",
     "tollgate-2.png"

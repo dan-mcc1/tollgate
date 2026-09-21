@@ -5,6 +5,7 @@ goes blank, with nothing failing anywhere until someone opens it during an incid
 finds it empty. These tests are what makes that a build failure instead.
 """
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -215,6 +216,25 @@ def test_the_committed_screenshots_match_the_committed_dashboard() -> None:
         screenshot = DASHBOARD.parent / name
         assert screenshot.exists(), f"{name} is recorded but missing. {RETAKE}"
         assert screenshot.read_bytes().startswith(PNG_MAGIC), f"{name} is not a PNG"
+
+
+def test_the_recorded_hash_does_not_depend_on_line_endings() -> None:
+    """The reason the digest parses the file instead of hashing its bytes.
+
+    `.gitattributes` sets `eol=lf`, so the repository stores LF and a Windows checkout
+    gets CRLF. A byte hash therefore answers differently on the machine that took the
+    screenshots than on the runner that checks them - which is a test that passes
+    locally and fails in CI permanently, and did.
+    """
+    lf = DASHBOARD.read_text(encoding="utf-8").replace("\r\n", "\n")
+    crlf = lf.replace("\n", "\r\n")
+
+    def digest_of(text: str) -> str:
+        content = json.loads(text)
+        canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    assert digest_of(lf) == digest_of(crlf) == manifest.dashboard_digest()
 
 
 def test_no_screenshot_is_missing_from_the_manifest() -> None:
