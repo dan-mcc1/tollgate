@@ -447,6 +447,14 @@ live dashboard, because the AWS stack is destroyed between work sessions and a l
 would show an empty page; a snapshot embeds the data and keeps working. Regenerate the
 traffic with `bench/demo_traffic.py`.
 
+Retaking those pictures is two steps, because a screenshot is the one artefact that cannot
+be regenerated from this repository and so has to be checked another way: capture them from
+the live dashboard, then run `uv run python dashboards/manifest.py` to record the hash of
+the dashboard they were taken from. A panel edited without a retake then fails the build.
+The obvious check - is the PNG newer than the JSON - cannot work, because git does not store
+modification times: on a fresh checkout every file is written within the same millisecond,
+and which one wins is decided by whatever order the checkout happens to use.
+
 The hit rate on that snapshot is not a result and is not quoted as one. `demo_traffic.py`
 draws from a handful of prompts per tenant, so it repeats itself far more than real
 traffic would; it exists to give the panels shape. The measured cache numbers are in the
@@ -683,6 +691,7 @@ bench/                 baseline and streaming latency, limit accuracy, reservati
                        rollup query plans, cache savings, semantic threshold sweep;
                        labelled pairs in bench/data/, results under bench/results/
 infra/                 Terraform: bootstrap (durable), main (rebuildable), grafana
-dashboards/            Grafana dashboard JSON, applied by infra/grafana, and its screenshot
+dashboards/            Grafana dashboard JSON, applied by infra/grafana; its screenshots,
+                       and manifest.py, which records which dashboard they were taken from
 postgres/              init SQL for the local database
 ```
