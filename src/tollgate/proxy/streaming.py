@@ -39,6 +39,7 @@ from tollgate.proxy.passthrough import (
     map_transport_error,
 )
 from tollgate.proxy.sse import StreamScanner
+from tollgate.telemetry import tracer
 from tollgate.usage import (
     PriceBook,
     apply_usage_payload,
@@ -129,14 +130,25 @@ async def proxy_stream_generate_content(
     def elapsed_ms() -> int:
         return round((time.perf_counter() - started) * 1000)
 
+    # Started by hand rather than with a `with`, because a stream's upstream time is
+    # the whole relay and not the moment before the first byte. It is parented to the
+    # root span here and closed in finish(), which every path below reaches exactly once.
+    upstream_span = tracer.start_span("upstream", attributes={"tollgate.streamed": True})
+
     async def finish() -> None:
-        """Close the books on this request: one ledger row, then the settlement.
+        """Close the books on this request: the upstream span, one ledger row, then the
+        settlement.
 
         In that order, always. The settlement's script skips a month counter that has
         been evicted, on the understanding that the row is already in the ledger for the
         next reseed to find. If the write fails the settlement never runs, and the
         reservation is released by its lease instead.
         """
+        upstream_span.set_attribute("tollgate.upstream.attempts", record.upstream_attempts)
+        upstream_span.set_attribute("http.response.status_code", record.status_code)
+        if record.upstream_ttfb_ms is not None:
+            upstream_span.set_attribute("tollgate.upstream.ttfb_ms", record.upstream_ttfb_ms)
+        upstream_span.end()
         await write_usage(sessionmaker, pricebook, record)
         await budget.settle(reservation, record.cost_microcents)
 

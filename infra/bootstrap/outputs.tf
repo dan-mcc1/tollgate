@@ -23,6 +23,7 @@ output "secret_names" {
     aws_secretsmanager_secret.database_url.name,
     aws_secretsmanager_secret.gemini_api_key.name,
     aws_secretsmanager_secret.redis_url.name,
+    aws_secretsmanager_secret.otel_headers.name,
   ]
 }
 

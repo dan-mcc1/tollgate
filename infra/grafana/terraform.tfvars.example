@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and fill in. The token is a secret: terraform.tfvars is
+# already ignored by git, and this file is the one that gets committed.
+grafana_url               = "https://YOURSTACK.grafana.net"
+grafana_auth              = "glsa_..."
+prometheus_datasource_uid = "grafanacloud-prom"
+alert_email               = "you@example.com"

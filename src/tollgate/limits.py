@@ -83,6 +83,7 @@ from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
 from tollgate.logs import request_id_var
+from tollgate.telemetry import stage
 from tollgate.usage import MONTH_FORMAT, Price, PriceBook, format_usd, month_bounds
 
 logger = logging.getLogger("tollgate.limits")
@@ -267,7 +268,13 @@ async def rate_limited(
 
     limiter: RateLimiter = request.app.state.rate_limiter
     burst = max(1, tenant.rate_limit_burst or tenant.rate_limit_rpm)
-    decision = await limiter.take(tenant.tenant_id, tenant.rate_limit_rpm, burst)
+    with stage(
+        "rate_limit",
+        **{"tollgate.limiter.backend": limiter.name, "tollgate.limit.rpm": tenant.rate_limit_rpm},
+    ) as span:
+        decision = await limiter.take(tenant.tenant_id, tenant.rate_limit_rpm, burst)
+        span.set_attribute("tollgate.limit.allowed", decision.allowed)
+        span.set_attribute("tollgate.limit.remaining", round(decision.remaining, 3))
 
     if not decision.allowed:
         # No ledger row: the request never reached the upstream, so it cost nothing and
@@ -503,9 +510,13 @@ class BudgetGuard:
         )
         request_id = request_id_var.get() or uuid.uuid4().hex
 
-        allowed, spent, reserved = await self._claim(
-            tenant.tenant_id, month, budget, estimate, request_id
-        )
+        with stage("budget.reserve", **{"tollgate.budget.estimate_microcents": estimate}) as span:
+            allowed, spent, reserved = await self._claim(
+                tenant.tenant_id, month, budget, estimate, request_id
+            )
+            span.set_attribute("tollgate.budget.spent_microcents", spent)
+            span.set_attribute("tollgate.budget.reserved_microcents", reserved)
+            span.set_attribute("tollgate.budget.allowed", allowed)
         if not allowed:
             logger.info(
                 "budget exhausted",
@@ -525,13 +536,14 @@ class BudgetGuard:
         if reservation is None or self._settle is None:
             return
         try:
-            await self._settle(
-                keys=[
-                    self.spend_key(reservation.tenant_id, reservation.month),
-                    self.reserved_key(reservation.tenant_id),
-                ],
-                args=[reservation.request_id, actual_microcents or 0],
-            )
+            with stage("budget.settle", **{"tollgate.cost_microcents": actual_microcents}):
+                await self._settle(
+                    keys=[
+                        self.spend_key(reservation.tenant_id, reservation.month),
+                        self.reserved_key(reservation.tenant_id),
+                    ],
+                    args=[reservation.request_id, actual_microcents or 0],
+                )
         except (RedisError, OSError, TimeoutError) as exc:
             logger.warning(
                 "budget settlement deferred to the lease",

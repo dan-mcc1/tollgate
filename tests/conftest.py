@@ -7,6 +7,7 @@ httpx.MockTransport), so no test touches the network.
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -20,6 +21,13 @@ import redis.exceptions
 import uvicorn
 from alembic import command
 from alembic.config import Config
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import Counter, Histogram, MeterProvider
+from opentelemetry.sdk.metrics.export import AggregationTemporality, InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from pydantic import SecretStr
 from redis.asyncio import Redis
 from sqlalchemy import make_url, select, text
@@ -33,8 +41,10 @@ from tollgate.config import Settings
 from tollgate.db.models import ApiKey, Tenant, UsageRecord
 from tollgate.health import UpstreamProbe
 from tollgate.limits import BudgetGuard, MemoryRateLimiter, RateLimiter
+from tollgate.logs import JsonFormatter
 from tollgate.main import app
 from tollgate.proxy.passthrough import create_upstream_client
+from tollgate.telemetry import histogram_views
 from tollgate.usage import PriceBook
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +146,85 @@ def budget_redis() -> Redis | None:
     """The Redis behind the budget guard. None means it reads the ledger directly,
     which is the default here so most tests need no Redis at all."""
     return None
+
+
+@pytest.fixture(scope="session")
+def span_exporter() -> InMemorySpanExporter:
+    """Collect spans in memory for the whole session.
+
+    Session scoped because a process gets one global tracer provider: OpenTelemetry
+    ignores a second `set_tracer_provider` and warns, so installing one per test would
+    silently leave every test after the first recording into a discarded provider.
+    """
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(sampler=ALWAYS_ON)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    return exporter
+
+
+@pytest.fixture
+def spans(span_exporter: InMemorySpanExporter) -> InMemorySpanExporter:
+    """The spans this test produced, and only this test's."""
+    span_exporter.clear()
+    return span_exporter
+
+
+@pytest.fixture
+def log_lines() -> Iterator[list[str]]:
+    """Every log line the deployed service would write, formatted the way it formats it.
+
+    Formatted rather than captured raw, because the formatter is where the context
+    variables and the trace id are folded in - and therefore where a leak would appear.
+
+    Filtered the way logging.json filters: everything from `tollgate`, and nothing else
+    below WARNING. Without that this collects the test's own httpx client announcing
+    `POST .../generateContent?key=tg_...` at INFO, which is the harness talking rather
+    than the gateway. Production keeps that quiet by setting `httpx` to WARNING, and
+    test_logging_config_keeps_third_party_request_logging_quiet pins it there.
+    """
+    written: list[str] = []
+
+    class Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.name.startswith("tollgate") or record.levelno >= logging.WARNING:
+                written.append(JsonFormatter().format(record))
+
+    handler = Collector()
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        yield written
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+
+@pytest.fixture(scope="session")
+def metric_reader() -> InMemoryMetricReader:
+    """Collect metrics in memory, with the same bucket boundaries production uses.
+
+    Delta temporality, so each collection reports only what happened since the last one.
+    The default is cumulative, under which every counter would carry the whole session's
+    traffic and a test asserting "one request" would pass once and then never again.
+    """
+    reader = InMemoryMetricReader(
+        preferred_temporality={
+            Counter: AggregationTemporality.DELTA,
+            Histogram: AggregationTemporality.DELTA,
+        }
+    )
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader], views=histogram_views()))
+    return reader
+
+
+@pytest.fixture
+def meter(metric_reader: InMemoryMetricReader) -> InMemoryMetricReader:
+    """The metrics this test produced, and only this test's."""
+    metric_reader.get_metrics_data()  # drain whatever earlier tests left behind
+    return metric_reader
 
 
 @pytest.fixture(scope="session")

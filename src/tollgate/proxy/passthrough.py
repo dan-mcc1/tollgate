@@ -17,6 +17,7 @@ from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
 from tollgate.errors import GatewayError
 from tollgate.limits import BudgetGuard
+from tollgate.telemetry import stage
 from tollgate.usage import PriceBook, apply_usage_metadata, upstream_error_code, write_usage
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -159,8 +160,14 @@ async def proxy_generate_content(
             # One deadline over the whole exchange, retries included. Without it, a slow
             # upstream plus retries could outlast the load balancer's patience, and the
             # caller would get its generic 504 instead of an error that says what happened.
-            async with asyncio.timeout(settings.request_deadline_s):
-                response = await send_with_retries(client, settings, upstream_request, record)
+            #
+            # This span is the one that earns its keep: subtract it from the root and what
+            # remains is the gateway's own overhead, which is what phase 5's alert watches.
+            with stage("upstream") as span:
+                async with asyncio.timeout(settings.request_deadline_s):
+                    response = await send_with_retries(client, settings, upstream_request, record)
+                span.set_attribute("tollgate.upstream.attempts", record.upstream_attempts)
+                span.set_attribute("http.response.status_code", response.status_code)
         except TimeoutError as exc:
             raise GatewayError(
                 504, "gateway_deadline_exceeded", "The request took longer than the gateway allows."

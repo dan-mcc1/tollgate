@@ -236,6 +236,18 @@ resource "aws_secretsmanager_secret" "redis_url" {
   }
 }
 
+# The OTLP authorization header, which is a credential for the telemetry backend. It is a
+# secret rather than plain configuration for the same reason the provider key is: anyone
+# who can read a task definition can read its environment block.
+resource "aws_secretsmanager_secret" "otel_headers" {
+  name        = "tollgate/otel-headers"
+  description = "OTLP headers for Grafana Cloud, e.g. Authorization=Basic <base64>"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 # -----------------------------------------------------------------------------------------
 # 6. Billing alarm
 # -----------------------------------------------------------------------------------------

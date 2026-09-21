@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from tollgate.auth import TenantContext
@@ -16,6 +17,7 @@ from tollgate.limits import build_budget_guard, build_rate_limiter, build_redis,
 from tollgate.logs import RequestContextMiddleware
 from tollgate.proxy.passthrough import create_upstream_client, proxy_generate_content
 from tollgate.proxy.streaming import proxy_stream_generate_content
+from tollgate.telemetry import facts, setup_telemetry
 from tollgate.usage import MONTH_FORMAT, PriceBook, format_usd, rollup
 
 
@@ -24,6 +26,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Create shared resources once at startup and close them at shutdown."""
     settings = get_settings()
     app.state.settings = settings
+    # Before anything else that might want to emit a span.
+    telemetry = setup_telemetry(settings)
 
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
     app.state.sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
@@ -49,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         if redis is not None:
             await redis.aclose()
         await engine.dispose()
+        telemetry.shutdown()  # flush whatever spans are still batched
 
 
 app = FastAPI(title="Tollgate", lifespan=lifespan)
@@ -58,6 +63,20 @@ app.include_router(health_router)
 
 
 VALID_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics(request: Request) -> Response:
+    """Prometheus scrape endpoint, for local development.
+
+    It carries tenant names and their spend, and the load balancer in front of this is
+    public, so it is off unless `METRICS_ENDPOINT_ENABLED` says otherwise and stays off
+    in production. Production pushes the same numbers over OTLP, which needs no inbound
+    route at all.
+    """
+    if not request.app.state.settings.metrics_endpoint_enabled:
+        raise GatewayError(404, "not_found", "Metrics endpoint is not enabled.")
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 def money(microcents: int) -> dict[str, Any]:
@@ -81,6 +100,7 @@ async def spend(
     flight are therefore not counted here; they are counted when deciding whether to
     admit the next one.
     """
+    facts().method = "spend"  # real tenant traffic, and it should say so on a panel
     month = month or datetime.now(UTC).strftime(MONTH_FORMAT)
     if not VALID_MONTH.match(month):
         raise GatewayError(400, "invalid_month", "month must look like 2026-09.")

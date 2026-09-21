@@ -39,6 +39,24 @@ class Settings(BaseSettings):
     # error instead of the load balancer cutting the connection.
     request_deadline_s: float = 120.0
 
+    # Telemetry. The endpoint and headers are settings rather than the SDK's own
+    # OTEL_* environment variables, for the same reason the provider key is: the
+    # headers carry a credential, and a SecretStr cannot be printed by accident.
+    otel_enabled: bool = False
+    otel_endpoint: str = ""  # OTLP/HTTP base, e.g. https://otlp-gateway-....grafana.net/otlp
+    otel_headers: SecretStr = SecretStr("")  # "Authorization=Basic <base64>"
+    otel_service_name: str = "tollgate"
+    otel_environment: str = "development"
+    otel_console: bool = False  # print spans locally instead of shipping them
+    # Every request, at this volume. Sampling exists so the knob is there before it is
+    # needed, not because anything here is expensive.
+    otel_sample_ratio: float = 1.0
+    otel_export_interval_ms: int = 15_000
+    # GET /metrics, for local development. Off by default and left off in production:
+    # the endpoint lists tenant names and their spend, and the load balancer is public.
+    # Production ships metrics by OTLP instead, which needs no inbound route at all.
+    metrics_endpoint_enabled: bool = False
+
     # Rate limiting. "memory" keeps a bucket per container, which multiplies a
     # tenant's effective limit by the number of containers; "redis" is the one that is
     # correct on more than one task. Both are kept so the difference can be measured.

@@ -53,6 +53,12 @@ resource "aws_ecs_task_definition" "app" {
       # Rate-limit buckets live in Redis, not in the task. With more than one task the
       # in-process limiter would give each tenant its limit once per task.
       { name = "LIMITER_BACKEND", value = var.limiter_backend },
+      # Telemetry goes out over OTLP. METRICS_ENDPOINT_ENABLED is deliberately absent:
+      # the scrape endpoint lists tenant names and their spend, and this service sits
+      # behind a public load balancer.
+      { name = "OTEL_ENABLED", value = tostring(var.otel_enabled) },
+      { name = "OTEL_ENDPOINT", value = var.otel_endpoint },
+      { name = "OTEL_ENVIRONMENT", value = "production" },
       # The pipeline overwrites this with the commit SHA on every deploy.
       { name = "APP_VERSION", value = try(data.aws_ecr_image.initial.image_tags[0], "unknown") },
     ]
@@ -63,6 +69,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "DATABASE_URL", valueFrom = data.aws_secretsmanager_secret.database_url.arn },
       { name = "GEMINI_API_KEY", valueFrom = data.aws_secretsmanager_secret.gemini_api_key.arn },
       { name = "REDIS_URL", valueFrom = data.aws_secretsmanager_secret.redis_url.arn },
+      { name = "OTEL_HEADERS", valueFrom = data.aws_secretsmanager_secret.otel_headers.arn },
     ]
 
     logConfiguration = {

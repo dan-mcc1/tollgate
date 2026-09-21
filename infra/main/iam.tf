@@ -34,7 +34,7 @@ resource "aws_iam_role_policy_attachment" "execution_managed" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Read exactly these three secrets, nothing else in Secrets Manager.
+# Read exactly these four secrets, nothing else in Secrets Manager.
 resource "aws_iam_role_policy" "execution_secrets" {
   name = "read-tollgate-secrets"
   role = aws_iam_role.execution.id
@@ -47,6 +47,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
         data.aws_secretsmanager_secret.database_url.arn,
         data.aws_secretsmanager_secret.gemini_api_key.arn,
         data.aws_secretsmanager_secret.redis_url.arn,
+        data.aws_secretsmanager_secret.otel_headers.arn,
       ]
     }]
   })

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tollgate.db.models import ApiKey, Tenant
 from tollgate.errors import GatewayError
 from tollgate.logs import tenant_var
+from tollgate.telemetry import stage
 
 KEY_PREFIX = "tg_"
 STORED_PREFIX_LENGTH = 12  # enough to recognise a key in logs, far too little to use it
@@ -97,8 +98,9 @@ async def require_tenant(request: Request) -> TenantContext:
         raise GatewayError(401, "missing_api_key", "Send a Tollgate key in x-goog-api-key.")
 
     sessionmaker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
-    async with sessionmaker() as session:
-        tenant = await resolve_key(session, key)
+    with stage("authenticate"):
+        async with sessionmaker() as session:
+            tenant = await resolve_key(session, key)
 
     if tenant is None:
         # Unknown and revoked get the same answer, so a caller can't probe which keys once existed.

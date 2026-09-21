@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. Per-person and per-stack values only; nothing
+# secret belongs here. The OTLP credential lives in Secrets Manager as
+# tollgate/otel-headers, injected into the task at startup.
+
+# OTLP/HTTP base URL from the Grafana Cloud portal, without a trailing /v1/traces.
+otel_endpoint = "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"
+
+# Set false to run without telemetry (the task then needs no OTLP credential at all).
+otel_enabled = true
+
+# Where rate-limit buckets live. "memory" is per-task and wrong above one task.
+limiter_backend = "redis"

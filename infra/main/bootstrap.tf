@@ -29,6 +29,10 @@ data "aws_secretsmanager_secret" "redis_url" {
   name = "${var.name}/redis-url"
 }
 
+data "aws_secretsmanager_secret" "otel_headers" {
+  name = "${var.name}/otel-headers"
+}
+
 data "aws_iam_role" "github_deploy" {
   name = "${var.name}-github-deploy"
 }

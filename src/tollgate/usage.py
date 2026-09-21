@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tollgate.db.models import ModelPrice, UsageRecord
+from tollgate.telemetry import record_usage, stage
 
 logger = logging.getLogger("tollgate.usage")
 
@@ -217,9 +218,14 @@ async def write_usage(
     nobody costed.
     """
     await pricebook.apply(record)
-    async with sessionmaker() as session:
-        session.add(record)
-        await session.commit()
+    # On the root span and in this request's metrics: these are facts about the
+    # request, and whoever is looking at a slow trace wants them without opening a
+    # child span.
+    record_usage(record)
+    with stage("ledger.write"):
+        async with sessionmaker() as session:
+            session.add(record)
+            await session.commit()
 
 
 async def run_even_if_cancelled(work: Coroutine[Any, Any, None], description: str) -> None:

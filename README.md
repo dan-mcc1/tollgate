@@ -9,7 +9,7 @@ application adopts Tollgate by changing one base URL, and the official SDK keeps
 
 > **Status:** live at `https://tollgate.danmccabe.dev`, deployed from `main` by GitHub Actions.
 > Streaming and non-streaming passthrough, tenant authentication, usage accounting, rate
-> limits and spend budgets work. Observability, caching and detection are next.
+> limits, spend budgets and observability work. Caching and detection are next.
 > See [Roadmap](#roadmap).
 
 ## Why a gateway exists
@@ -64,7 +64,11 @@ Decisions made up front, before the code that depends on them:
 | Caches scoped per tenant | A shared cache leaks information about one tenant's traffic to another. |
 | Semantic cache threshold chosen from a measured curve | A wrong semantic hit is a correctness bug, not a performance trade-off. The false hit rate gets published next to the savings. |
 | Detection defaults to monitor mode | Blocking is opt-in per tenant, which is how detection is rolled out in practice. |
-| No prompt or response text in telemetry | Enforced by a test, not by convention. |
+| No prompt or response text in telemetry | Enforced by a test, not by convention: the check searches every span, metric label and log line for a canary. |
+| Instrumentation written out rather than installed | The FastAPI auto-instrumentation records the query string, and a tenant may put its key in `?key=`. That would write a live credential into every trace, and traces leave the building. |
+| The alert watches overhead, not total latency | Total latency is mostly the provider generating tokens. An alert on that fires whenever the model has a slow afternoon, and is muted within a week. |
+| Metrics emitted in one place, at the end | A refusal never reaches the proxy, so metrics emitted there would omit every 401, 429 and 402 - exactly the requests a rejection rate is meant to count. |
+| `/metrics` off in production | It lists tenant names and their spend, and the load balancer is public. Production pushes over OTLP, which needs no inbound route. |
 | Every benchmark runs against a local mock | Tests and load tests cost nothing and don't depend on provider variability. |
 
 ### The provider credential never leaves the gateway
@@ -198,6 +202,100 @@ stack is normally destroyed between work sessions (`terraform destroy` in `infra
 about 5 minutes to rebuild), which brings AWS spend to roughly zero while keeping the
 database, images, secrets and DNS. Neon is billed separately for the hours it is awake.
 
+## Observability
+
+One trace per request, one place that emits the metrics, and a rule about what may be
+recorded that a test enforces.
+
+### A trace
+
+```
+POST /v1beta/models/{model}:{method}     opened by the middleware, closed after the
+  authenticate                           last event of a stream has been relayed
+  rate_limit
+  budget.reserve
+  upstream                               the provider call, retries included
+  ledger.write
+  budget.settle
+```
+
+Subtract `upstream` from the root and what remains is the gateway's own overhead. That
+separation is the point of the whole phase: it is the only number this service is
+answerable for, and it is what the alert watches. An alert on total latency would fire
+whenever the provider had a slow afternoon, and would be muted within a week.
+
+The spans are written out by hand rather than installed. `opentelemetry-instrumentation-fastapi`
+would produce a server span for free, and would record `url.full` and `http.target` with it -
+both of which carry the query string, which is where the Gemini SDK is happy to put an API
+key. Traces go to a third party, so that is a credential leaving the building on every
+request. The spans here record `url.path` and never `url.full`.
+
+### Metrics
+
+Emitted from the middleware, once, at the end of every request. A refusal never reaches the
+proxy, so metrics emitted from the proxy would silently omit every 401, 429 and 402 - which
+are precisely the requests a rejection rate exists to count.
+
+Histogram boundaries are chosen per instrument rather than inherited. The default buckets
+step 0, 5, 10, 25, 50 ms, which is reasonable for a web request and useless here: measured
+overhead is 10.4 ms at the median and 14.1 ms at the 99th, so every interesting value falls
+in one bucket and a p99 reads "somewhere between 10 and 25". Overhead gets millisecond
+boundaries; the upstream call, which runs from 100 ms to a minute, gets boundaries spread
+over seconds. A percentile is only ever as precise as the bucket it lands in.
+
+`GET /metrics` exists for local development and is off by default. It lists tenant names and
+their spend, and the load balancer is public; production pushes over OTLP instead, which
+needs no inbound route at all. Push also suits Fargate, where a task has no stable address
+and would lose whatever it recorded between the last scrape and its shutdown.
+
+### What telemetry may not carry
+
+No prompt text, no response text, no headers, no query strings. Tenant, model, token counts,
+cost and outcome, and nothing else. `tests/test_telemetry.py` sends a canary string through
+the gateway - with the key in the query string, with a response full of fake secrets, and
+once as a stream - then searches every span, every metric label and every log line for it.
+The same test pins `httpx` to WARNING in `logging.json`, because httpx logs every request
+URL at INFO and the gateway uses httpx to reach the provider.
+
+### The dashboard and the alert
+
+[![The Tollgate dashboard](dashboards/tollgate.png)](https://niftypuma477.grafana.net/dashboard/snapshot/J3Nw1LoCgwYKvDHCdcJKSbmQ3xNx3sHh)
+
+**[Open the live snapshot](https://niftypuma477.grafana.net/dashboard/snapshot/J3Nw1LoCgwYKvDHCdcJKSbmQ3xNx3sHh)** - thirty minutes of traffic through the mock,
+four tenants behaving differently on purpose. `initech` is held to a rate limit it keeps
+hitting; `hooli` runs out of budget two thirds of the way across, and the amber band that
+appears at that point is the reservation design from phase 4 doing its job. A snapshot
+rather than a link to the live dashboard, because the AWS stack is destroyed between work
+sessions and a live link would show an empty page; a snapshot embeds the data and keeps
+working. Regenerate the traffic with `bench/demo_traffic.py`.
+
+Two of the tiles are worth explaining, because the first version of this dashboard got
+them wrong. **Refused by policy** and **Failed** were originally one number called "not
+served", which turned red as soon as a tenant hit its budget - reporting the gateway
+working exactly as designed as though something had broken. They are now separate, and
+the refusal tile has no alarm colour at all: a tenant held to the limit it was given is
+not a fault. The failure tile is scaled far tighter, because one request in twenty
+failing is a bad afternoon where one in five refused may be a Tuesday.
+
+[`dashboards/tollgate.json`](dashboards/tollgate.json) is the source of truth; Terraform
+applies it from that file, so a pull request shows the real diff and an edit made in
+Grafana's UI is drift that the next apply reverses. `infra/grafana` is a third stack because
+its lifetime differs from both others: `infra/main` is destroyed between work sessions, and
+taking the dashboard and alert down with it would break the published snapshot every time.
+
+A test keeps the two honest about each other. Every metric the dashboard queries must be one
+the gateway emits, checked for the alert as well since it lives in Terraform and would
+survive a rename the JSON caught; and the outcomes the code can produce must be exactly the
+outcomes the dashboard gives a colour, checked in both directions.
+
+```sh
+cp infra/grafana/terraform.tfvars.example infra/grafana/terraform.tfvars   # fill it in
+terraform -chdir=infra/grafana init && terraform -chdir=infra/grafana apply
+```
+
+Apply it after telemetry is flowing. Before then an empty panel could mean a wrong metric
+name or simply nothing sent yet, and there is no way to tell which.
+
 ## Roadmap
 
 - [x] **0. Scaffold.** uv, ruff and mypy; mock upstream with scripted SSE and faults; Postgres and
@@ -213,8 +311,10 @@ database, images, secrets and DNS. Neon is billed separately for the hours it is
   versioned price table, money in integer micro-cents, budget reservation held as an expiring
   lease and reconciled on settlement, a covering index chosen from the query plan, and
   `GET /v1/spend` per tenant.
-- [ ] **5. Observability.** OpenTelemetry traces per request, Prometheus metrics that separate
-  gateway overhead from upstream time, a version-controlled Grafana dashboard, one real alert.
+- [x] **5. Observability.** One OpenTelemetry trace per request with the upstream call as its
+  own span, Prometheus metrics whose histogram boundaries were chosen for the numbers being
+  measured, a Grafana dashboard and an overhead alert both applied from Terraform, and a test
+  that fails the build if a prompt reaches a span, a metric label or a log line.
 - [ ] **6. Caching.** Exact cache on a normalised request hash, semantic cache on pgvector, cached
   responses replayed as a stream, threshold picked from a precision–recall sweep.
 - [ ] **7. Detection.** Regex baseline, ONNX classifier for prompt injection, secret and PII
@@ -246,7 +346,7 @@ database, images, secrets and DNS. Neon is billed separately for the hours it is
 | Compute | AWS ECS Fargate | in use |
 | Infrastructure | Terraform | in use |
 | Pipeline | GitHub Actions with OIDC | in use |
-| Tracing and metrics | OpenTelemetry, Prometheus, Grafana Cloud | phase 5 |
+| Tracing and metrics | OpenTelemetry, Prometheus, Grafana Cloud | in use |
 | Detection | ONNX Runtime with a published classifier | phase 7 |
 | Load testing | k6 | phase 8 |
 
@@ -304,6 +404,14 @@ curl -H "x-goog-api-key: tg_..." localhost:8000/v1/spend?month=2026-08
 Rate limiting uses in-process buckets by default, which is correct for one container and
 wrong for several. Set `LIMITER_BACKEND=redis` and `REDIS_URL` to share them; see
 [`src/tollgate/limits.py`](src/tollgate/limits.py) for why the two backends both exist.
+
+Telemetry is off by default. `METRICS_ENDPOINT_ENABLED=True` serves `GET /metrics` locally;
+`OTEL_ENABLED=True` with an endpoint and headers ships traces and metrics onward:
+
+```sh
+OTEL_ENABLED=True OTEL_CONSOLE=True uv run uvicorn tollgate.main:app --port 8000
+curl localhost:8000/metrics
+```
 
 Run the checks CI runs:
 
@@ -380,7 +488,7 @@ mock_upstream/         fake Gemini API: SSE, usage, scripted faults
 tests/                 unit and integration tests, no network
 bench/                 baseline and streaming latency, limit accuracy, reservation error,
                        rollup query plans; results committed under bench/results/
-infra/                 Terraform (phase 2)
-dashboards/            Grafana dashboard JSON (phase 5)
+infra/                 Terraform: bootstrap (durable), main (rebuildable), grafana
+dashboards/            Grafana dashboard JSON, applied by infra/grafana, and its screenshot
 postgres/              init SQL for the local database
 ```

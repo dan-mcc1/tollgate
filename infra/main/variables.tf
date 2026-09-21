@@ -68,3 +68,15 @@ variable "limiter_backend" {
     error_message = "limiter_backend must be 'memory' or 'redis'."
   }
 }
+
+variable "otel_enabled" {
+  description = "Export traces and metrics over OTLP."
+  type        = bool
+  default     = true
+}
+
+variable "otel_endpoint" {
+  description = "OTLP/HTTP base URL, e.g. https://otlp-gateway-prod-xx.grafana.net/otlp"
+  type        = string
+  default     = ""
+}
