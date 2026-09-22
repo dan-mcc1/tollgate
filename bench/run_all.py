@@ -26,8 +26,8 @@ that is invisible from here, and the skip decisions below will be wrong in which
 direction you changed. Nothing can see inside another process; this is the assumption, and
 it is written down rather than hidden.
 
-The phase 8 load test runs last and takes several minutes, because its steady sweep is six
-arrival rates at forty-five seconds each.
+The load test runs last and takes several minutes, because its steady sweep is six arrival
+rates at forty-five seconds each.
 """
 
 import argparse
@@ -51,7 +51,6 @@ class Step:
     """One measurement: what to run, where its output belongs, and when not to run it."""
 
     name: str
-    phase: int
     summary: str
     command: list[str]
     # Where to put stdout, for the scripts that only print. None means the script writes
@@ -156,7 +155,6 @@ def steps(context: Context) -> list[Step]:
     return [
         Step(
             name="baseline_latency",
-            phase=1,
             summary="gateway overhead against calling the provider directly, sequential",
             command=["bench/baseline_latency.py", key, "--gateway", gateway, "--requests", "300"],
             capture="baseline_latency.txt",
@@ -165,7 +163,6 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="stream_ttft",
-            phase=3,
             summary="added time to first token on a streamed response",
             command=["bench/stream_ttft.py", key, "--gateway", gateway, "--requests", "60"],
             capture="stream_ttft.txt",
@@ -174,7 +171,6 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="limit_accuracy",
-            phase=4,
             summary="rate limit error in process against Redis, across container counts",
             command=["bench/limit_accuracy.py"],
             capture="limit_accuracy.txt",
@@ -183,7 +179,6 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="reservation_error",
-            phase=4,
             summary="streamed budget reservation against what the request really cost",
             command=["bench/reservation_error.py", key, "--gateway", gateway],
             capture="reservation_error.txt",
@@ -192,14 +187,12 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="rollup_plan",
-            phase=4,
             summary="the rollup query before and after its index, with both plans",
             command=["bench/rollup_plan.py"],
             minutes=3,
         ),
         Step(
             name="cache_savings",
-            phase=6,
             summary="exact cache hit rate, latency and spend avoided, over five traffic shapes",
             command=["bench/cache_savings.py", key, "--gateway", gateway],
             guard=needs_gateway,
@@ -207,7 +200,6 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="cache_savings_semantic",
-            phase=6,
             summary="the same traffic with the semantic tier on, a quarter of it reworded",
             command=[
                 "bench/cache_savings.py",
@@ -224,14 +216,12 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="cache_sweep",
-            phase=6,
             summary="the semantic threshold precision-recall curve, against the mock's embeddings",
             command=["bench/cache_sweep.py"],
             minutes=1,
         ),
         Step(
             name="detection_eval",
-            phase=7,
             summary="injection precision and recall, every tier, over the committed corpus",
             command=["bench/detection_eval.py", "--sweep"],
             guard=needs_classifier,
@@ -239,7 +229,6 @@ def steps(context: Context) -> list[Step]:
         ),
         Step(
             name="load_test",
-            phase=8,
             summary="steady sweep, burst, degraded upstream, and cache warm against cold",
             command=["bench/load_test.py", key, "--gateway", gateway, "--quiet"],
             guard=needs_metrics,
@@ -286,14 +275,11 @@ def summarise(outcomes: list[Outcome]) -> str:
         "",
         "SUMMARY",
         "",
-        f"{'phase':>6} {'measurement':<24} {'status':<8} {'time':>8}  note",
+        f"{'measurement':<24} {'status':<8} {'time':>8}  note",
     ]
     for outcome in outcomes:
         minutes = f"{outcome.seconds / 60:.1f}m" if outcome.seconds else "-"
-        lines.append(
-            f"{outcome.step.phase:>6} {outcome.step.name:<24} {outcome.status:<8} "
-            f"{minutes:>8}  {outcome.detail}"
-        )
+        lines.append(f"{outcome.step.name:<24} {outcome.status:<8} {minutes:>8}  {outcome.detail}")
     skipped = [o for o in outcomes if o.status == "skipped"]
     failed = [o for o in outcomes if o.status == "failed"]
     lines.append("")

@@ -1,4 +1,4 @@
-"""Phase 8: what the gateway costs under load, where it stops, and how it fails.
+"""What the gateway costs under load, where it stops, and how it fails.
 
 Four scenarios, each answering one question, all of them against the mock so the number
 is the gateway's and not the provider's mood on the day:
@@ -13,9 +13,9 @@ is the gateway's and not the provider's mood on the day:
 
 **Where the overhead number comes from.** Not from k6. `http_req_duration` is dominated
 by the mock holding each request for 100 ms, and subtracting one distribution from
-another is wrong exactly at the tail, which is the end that matters. The gateway has
-recorded total-minus-upstream per request since phase 5, so this scrapes `/metrics`
-either side of each run, diffs the histogram buckets, and interpolates from the delta.
+another is wrong exactly at the tail, which is the end that matters. The gateway records
+total-minus-upstream per request, so this scrapes `/metrics` either side of each run,
+diffs the histogram buckets, and interpolates from the delta.
 That is the same series the dashboard's overhead panel reads and the same one the alert
 watches, which means this benchmark and the alert cannot disagree about what overhead is.
 
@@ -770,10 +770,9 @@ def main() -> None:
         default=40,
         help="the rate burst and degraded run at, and the sweep row it is compared with",
     )
-    # Forty-five seconds, not the fifteen this started at. Short runs on a laptop that is
-    # also hosting the gateway, the mock, Postgres and the load generator produced a sweep
-    # that was not monotonic - 60/s looking worse than 70/s - which is scheduling noise
-    # reading as a result. At this length the curve is flat until it bends and stays bent.
+    # Long enough that scheduling noise does not read as a result: on a laptop also hosting
+    # the gateway, the mock, Postgres and the load generator, shorter runs produce a sweep
+    # that is not monotonic.
     parser.add_argument("--duration", type=int, default=45, help="seconds per steady run")
     parser.add_argument("--spike", type=int, default=4, help="burst multiple over --rate")
     parser.add_argument(

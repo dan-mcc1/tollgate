@@ -3,7 +3,7 @@
 `tenants.detection_mode` is backfilled to "monitor" by the server default rather than left
 NULL, so every tenant that already exists is inspected from the moment this lands. Monitor
 and not block: nothing is refused until somebody has read this detector's false positive
-rate against real traffic, which is what phase 7's eval harness produces. The check
+rate against real traffic, which is what bench/detection_eval.py produces. The check
 constraint names the three legal values, because the gateway reads this column on every
 request and an unknown value would have to be interpreted.
 

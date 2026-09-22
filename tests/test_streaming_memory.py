@@ -76,11 +76,10 @@ async def test_memory_stays_flat_over_a_very_long_response(
 class TestWithCachingOn:
     """The same guarantee, with the cache holding a copy of the response to store.
 
-    Phase 6 introduced the one thing this file exists to forbid - a second reference to
-    the response as it goes past - so the guarantee is re-measured with it switched on.
-    What keeps it true is the bound: past `cache_max_response_bytes` the collection is
-    dropped and the memory returned, so the peak is a property of the bound rather than
-    of the response.
+    Caching holds the one thing this file exists to forbid - a second reference to the
+    response as it goes past - so the guarantee is measured again with it switched on. What
+    keeps it true is the bound: past `cache_max_response_bytes` the collection is dropped and
+    the memory returned, so the peak is a property of the bound rather than of the response.
     """
 
     @pytest.fixture

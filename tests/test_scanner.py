@@ -444,7 +444,7 @@ async def test_a_leaking_response_does_not_leak_into_telemetry(
     meter: Any,
     log_lines: list[str],
 ) -> None:
-    """The phase 5 canary, pointed at the one component whose job is to read responses. A
+    """The telemetry canary, pointed at the one component whose job is to read responses. A
     scanner that logged what it matched in order to be helpful would be writing live
     credentials into a third party's trace storage."""
     await set_mode(sessionmaker, MODE_BLOCK)

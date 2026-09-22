@@ -91,10 +91,9 @@ class RequestContextMiddleware:
     """Assigns the request id, opens the root span, and writes one access log line.
 
     A plain ASGI middleware rather than Starlette's BaseHTTPMiddleware, so it passes
-    streaming responses through untouched (phase 3 depends on that). That matters twice
-    over here: the root span stays open until the last event of a stream has been
-    relayed, so the upstream time recorded beneath it covers the whole response rather
-    than the moment before the first byte.
+    streaming responses through untouched. The root span therefore stays open until the last
+    event of a stream has been relayed, and the upstream time recorded beneath it covers the
+    whole response rather than the moment before the first byte.
     """
 
     def __init__(self, app: ASGIApp) -> None:

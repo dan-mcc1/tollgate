@@ -116,9 +116,8 @@ class CacheService:
         self._ttl_s = ttl_s
         self._max_temperature = max_temperature
         self._assumed_temperature = assumed_temperature
-        # How much of a streamed response may be held in order to cache it. See
-        # proxy/streaming.py: the phase 3 promise is that memory stays flat under a long
-        # response, and a bound is precisely what keeps that promise true.
+        # How much of a streamed response may be held in order to cache it. The bound is
+        # what keeps memory flat under a long response; see proxy/streaming.py.
         self.max_response_bytes = max_response_bytes
         # None means the semantic tier is off, which is the shipped default. There is
         # deliberately no separate boolean: the tier is on exactly when it has something

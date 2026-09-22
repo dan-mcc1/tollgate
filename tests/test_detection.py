@@ -449,9 +449,9 @@ async def test_a_flagged_prompt_does_not_leak_into_telemetry(
     meter: Any,
     log_lines: list[str],
 ) -> None:
-    """The phase 5 canary, pointed at the feature most likely to break it. Inspection is
-    the one stage that reads the prompt on purpose, and a flagged request is exactly the
-    one an engineer is tempted to quote in a log line to explain the refusal."""
+    """The telemetry canary, pointed at the feature most likely to break it. Inspection is
+    the one stage that reads the prompt on purpose, and a flagged request is exactly the one
+    an engineer is tempted to quote in a log line to explain the refusal."""
     await set_mode(sessionmaker, MODE_BLOCK)
     prompt = f"{CANARY} {INJECTION}"
 

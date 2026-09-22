@@ -1,4 +1,4 @@
-"""Phase 6: choosing the semantic cache's threshold, or finding out there isn't one.
+"""Choosing the semantic cache's threshold, or finding out there isn't one.
 
 A semantic hit is the cache deciding two different requests are the same question. When
 it is right it saves a call; when it is wrong the caller gets a confident, well-formed

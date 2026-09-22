@@ -1,4 +1,4 @@
-"""Phase 1 baseline: how much latency the gateway adds over calling the upstream directly.
+"""How much latency the gateway adds over calling the upstream directly.
 
 Sends the same request to the upstream and through the gateway, alternating so both see
 the same conditions, and reports percentiles. Run it against the mock so the upstream's

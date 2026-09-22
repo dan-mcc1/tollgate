@@ -18,16 +18,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Fixed in the schema, because a column's width cannot follow a setting: changing it is a
-# migration and a re-embedding of every row, not a restart. 768 rather than the 3072 the
-# model can produce - pgvector indexes up to 2000 dimensions, the shorter output is a
-# supported truncation rather than a lesser model, and it is a quarter of the storage and
-# of the arithmetic in every distance comparison. `cache_embedding_dimensions` must agree.
+# migration and a re-embedding of every row. `cache_embedding_dimensions` must agree.
 EMBEDDING_DIMENSIONS = 768
 
-# The detection policy a new tenant gets. Monitor rather than block, for the reasons in
-# detect/service.py; the literal lives here because this module is a leaf that the rest of
-# the package imports, and tests/test_detection.py pins it to `detect.service.DEFAULT_MODE`
-# so the two cannot drift apart.
+# The detection policy a new tenant gets. The literal lives here because this module is a
+# leaf the rest of the package imports; a test pins it to `detect.service.DEFAULT_MODE`.
 DEFAULT_DETECTION_MODE = "monitor"
 
 # Deterministic constraint names, so autogenerate diffs stay stable across databases.
@@ -50,31 +45,26 @@ class Tenant(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
-    # Sustained requests per minute, and how many may arrive at once. NULL rpm means
-    # unlimited, which is how an internal tenant or a load generator is exempted
-    # without a magic number; a NULL burst is one minute's worth. Every tenant gets a
-    # limit by default, because a gateway whose limits are opt-in has none.
+    # Sustained requests per minute, and how many may arrive at once. NULL rpm is unlimited,
+    # which is how an internal tenant or a load generator is exempted; a NULL burst is one
+    # minute's worth. Every tenant gets a limit by default.
     rate_limit_rpm: Mapped[int | None] = mapped_column(server_default="60")
     rate_limit_burst: Mapped[int | None] = mapped_column(server_default="60")
-    # Monthly spend cap in micro-cents. NULL means unlimited, and unlike the rate limit
-    # above that is the default: a rate limit is a technical cap with a sane generic
-    # value, while a budget is what a customer agreed to pay. There is no honest number
-    # to invent for that, and inventing one cuts a paying tenant off mid-month.
+    # Monthly spend cap in micro-cents. NULL means unlimited, and unlike the rate limit that
+    # is the default: a budget is what a customer agreed to pay, and there is no generic
+    # number to invent for it.
     monthly_budget_microcents: Mapped[int | None] = mapped_column(BigInteger)
-    # What happens to a request the gateway reads as an injection attempt: "off" (not
-    # inspected at all), "monitor" (inspected, recorded, forwarded anyway) or "block"
-    # (refused with a 403). Monitor is the default because that is how detection is
-    # actually rolled out - against real traffic, until somebody has read the false
-    # positive rate - so blocking is opt-in per tenant. See detect/service.py.
+    # What happens to a request read as an injection attempt: "off" (not inspected),
+    # "monitor" (inspected, recorded, forwarded anyway) or "block" (refused with a 403).
+    # Blocking is opt-in per tenant. See detect/service.py.
     detection_mode: Mapped[str] = mapped_column(String(16), server_default=DEFAULT_DETECTION_MODE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="tenant")
 
-    # A closed set, enforced by the database rather than by the one CLI command that
-    # writes it. The gateway reads this column on every request, and a value it has never
-    # heard of would have to be interpreted: the code degrades an unknown mode to monitor,
-    # and this constraint means it never has to.
+    # A closed set, enforced by the database rather than by the one CLI command that writes
+    # it. The gateway reads this column on every request; the code degrades an unknown mode to
+    # monitor, and this constraint means it never has to.
     __table_args__ = (
         CheckConstraint("detection_mode IN ('off', 'monitor', 'block')", name="detection_mode"),
     )
@@ -144,26 +134,20 @@ class UsageRecord(Base):
     # Set only on a semantic hit, and kept because it is the evidence: a false hit found
     # later is investigated by asking what score let it through.
     cache_similarity: Mapped[float | None]
-    # What was spent embedding this request, in micro-cents. The semantic tier calls the
-    # provider before it can look anything up, so a miss under it costs money that a miss
-    # without it does not. Recorded separately from `cost_microcents` because it is the
-    # gateway's own spend on the tenant's behalf, and netting it against the saving is
-    # the only honest way to say whether the tier pays for itself.
+    # What was spent embedding this request, in micro-cents. Separate from `cost_microcents`
+    # because it is the gateway's own spend on the tenant's behalf, and netting it against the
+    # saving is the only way to say whether the semantic tier pays for itself.
     embedding_cost_microcents: Mapped[int | None] = mapped_column(BigInteger)
-    # What this request would have cost had it gone upstream, priced the same way a real
-    # charge is. Set only on a hit, where `cost_microcents` is zero because the tenant is
-    # not charged for an answer the gateway already had. The two columns are kept apart
-    # on purpose: adding a notional saving into the ledger's money column would inflate
-    # every bill and every budget check that reads it.
+    # What this request would have cost upstream. Set only on a hit, where `cost_microcents`
+    # is zero. Kept apart from it because folding a notional saving into the money column
+    # would inflate every bill and every budget check that reads it.
     cost_avoided_microcents: Mapped[int | None] = mapped_column(BigInteger)
-    # What the input inspection made of this request: "clean", "flagged", or "error" when
-    # the inspection itself failed and the request was forwarded anyway. NULL means nothing
-    # looked - detection off for the fleet, or "off" for this tenant - which is different
-    # from a request that was inspected and found clean. See detect/service.py.
+    # "clean", "flagged", or "error" when inspection itself failed and the request was
+    # forwarded anyway. NULL means nothing looked, which is different from inspected and
+    # found clean. See detect/service.py.
     input_verdict: Mapped[str | None] = mapped_column(String(16))
-    # Which tier reached that verdict: "baseline" or "classifier". Kept because the two
-    # disagree, and a flag that turns out to be wrong is investigated by asking which one
-    # raised it.
+    # Which tier reached that verdict: "baseline" or "classifier". The two disagree, and a
+    # wrong flag is investigated by asking which one raised it.
     input_tier: Mapped[str | None] = mapped_column(String(16))
     # The baseline rule that fired, by id - never the text that matched it. The text is the
     # prompt, and the prompt has no more business in the ledger than it has in a span.
@@ -171,36 +155,25 @@ class UsageRecord(Base):
     # The classifier's probability that this is an injection attempt. NULL when only the
     # baseline ran, which is a different statement from a score of zero.
     input_score: Mapped[float | None]
-    # What was then done: "allowed" or "blocked". Stored rather than derived from the
-    # verdict and the tenant's mode, because the mode is a column somebody can change this
-    # afternoon and the ledger is a record of what happened. Reading today's policy to
-    # explain last week's refusal is how a ledger starts lying.
+    # "allowed" or "blocked". Stored rather than derived from the verdict and the tenant's
+    # mode, because the mode can change and the ledger records what happened.
     input_action: Mapped[str | None] = mapped_column(String(16))
     # The same three columns for the other direction: what the scanner made of the response.
     output_verdict: Mapped[str | None] = mapped_column(String(16))
     # Which shapes were found, by rule id, comma separated and sorted - never the text that
-    # matched them. Wide enough for every rule in detect/scanner.py at once, so a response
-    # full of findings is recorded in full rather than truncated at some arbitrary count.
+    # matched them. Wide enough for every rule in detect/scanner.py at once.
     output_findings: Mapped[str | None] = mapped_column(String(400))
     # "allowed", "blocked" (the caller got none of it) or "truncated" (a stream stopped part
-    # way through, so the caller got the part that had already been relayed). The third value
-    # is the whole reason this column is not a boolean: containing a leak and noticing one
-    # after the fact are different outcomes, and a report that conflated them would overstate
-    # what streaming enforcement actually achieves.
+    # way, so the caller got what had already been relayed). Not a boolean, because containing
+    # a leak and noticing one after the fact are different outcomes.
     output_action: Mapped[str | None] = mapped_column(String(16))
 
-    # Every read of this table is "one tenant, one range of time": the budget check on
-    # each request, and the spend rollup behind /v1/spend. Leading with tenant_id narrows
-    # to one tenant, then created_at makes the month a contiguous range rather than a
-    # filter applied to the whole table.
-    #
-    # INCLUDE carries the columns those two queries read, which is what turns a bitmap
-    # heap scan into an index-only scan. It matters more than it looks: a tenant's rows
-    # are scattered through the table, because the ledger is written in arrival order
-    # and not grouped by tenant, so without it Postgres visits close to one heap block
-    # per row. Measured on 400k rows it is 1.1 ms against 0.2 ms, and 2508 buffers
-    # against 33; the index costs about twice the space and a little more work per
-    # insert. bench/rollup_plan.py prints all three plans.
+    # Every read of this table is "one tenant, one range of time": the budget check on each
+    # request, and the spend rollup behind /v1/spend. INCLUDE carries the columns those two
+    # queries read, turning a bitmap heap scan into an index-only scan - which matters because
+    # the ledger is written in arrival order, so a tenant's rows are scattered and Postgres
+    # would otherwise visit close to one heap block per row. bench/rollup_plan.py has the
+    # plans and the numbers.
     __table_args__ = (
         Index(
             "ix_usage_records_tenant_id_created_at",
@@ -224,10 +197,9 @@ class ModelPrice(Base):
     `effective_from`, and every usage row pins the `price_id` it was charged at, so a
     price correction made in March cannot quietly rewrite what a tenant owed in January.
 
-    Amounts are integer micro-cents (one millionth of a cent, 1e-8 USD) per million
-    tokens. A cent is far too coarse a unit to hold a request: a typical flash call
-    costs a few hundred micro-cents, so a ledger denominated in cents would round every
-    single row to zero and the month would sum to nothing.
+    Amounts are integer micro-cents (one millionth of a cent, 1e-8 USD) per million tokens.
+    A cent is too coarse to hold a request: a typical flash call costs a few hundred
+    micro-cents, so a ledger in cents would round every row to zero.
     """
 
     __tablename__ = "model_prices"

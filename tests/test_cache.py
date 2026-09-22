@@ -589,9 +589,9 @@ async def test_a_stream_the_caller_abandoned_is_not_kept(
 
 
 class TestOversizedResponse:
-    """Phase 3 promised flat memory under a long stream. The cache keeps that promise by
-    having a bound at all, so what matters is that the bound is obeyed - not how large it
-    is. Shrinking it here tests the mechanism without generating a megabyte to do it."""
+    """Memory stays flat under a long stream because the cached copy is bounded, so what
+    matters is that the bound is obeyed rather than how large it is. Shrinking it here tests
+    the mechanism without generating a megabyte to do it."""
 
     # What is counted is the raw bytes arriving from the upstream, not the text in them,
     # and an event repeats its envelope - usage, model version, response id - every time.

@@ -322,11 +322,10 @@ async def proxy_stream_generate_content(
 
     async def relay() -> AsyncIterator[bytes]:
         scanner = StreamScanner(sse=sse)
-        # The copy kept so this response can be cached, and the running count that bounds
-        # it. Phase 3's promise is that memory stays flat under a long stream, and a bound
-        # is exactly what keeps that promise: past `max_response_bytes` the collection is
-        # dropped, the memory goes back, and the relay carries on having noticed nothing.
-        # A response too large to cache is relayed and simply not stored.
+        # The copy kept so this response can be cached, and the running count that bounds it.
+        # The bound is what keeps memory flat under a long stream: past `max_response_bytes`
+        # the collection is dropped, the memory goes back, and the relay carries on having
+        # noticed nothing. A response too large to cache is relayed and simply not stored.
         #
         # The bytes counted are the raw ones arriving from the upstream, which is more
         # than the parsed events retained - so the bound is conservative in the direction

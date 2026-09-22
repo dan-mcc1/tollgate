@@ -277,8 +277,8 @@ async def rate_limited(
         span.set_attribute("tollgate.limit.remaining", round(decision.remaining, 3))
 
     if not decision.allowed:
-        # No ledger row: the request never reached the upstream, so it cost nothing and
-        # has no place in a spend ledger. Rejections are counted as a metric in phase 5.
+        # No ledger row: the request never reached the upstream, so it cost nothing and has
+        # no place in a spend ledger. Rejections are counted as a metric instead.
         logger.info(
             "rate limited",
             extra={"fields": {"rpm": tenant.rate_limit_rpm, "burst": burst}},

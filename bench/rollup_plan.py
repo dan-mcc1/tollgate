@@ -1,4 +1,4 @@
-"""Phase 4: what the rollup index is worth, measured from the query plans.
+"""What the rollup index is worth, measured from the query plans.
 
 Builds a throwaway `tollgate_bench` database, fills the ledger with a realistic spread of
 rows across tenants and months, then runs the two queries that actually read this table -

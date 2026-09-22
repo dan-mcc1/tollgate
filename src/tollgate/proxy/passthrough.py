@@ -259,7 +259,7 @@ async def proxy_generate_content(
             # caller would get its generic 504 instead of an error that says what happened.
             #
             # This span is the one that earns its keep: subtract it from the root and what
-            # remains is the gateway's own overhead, which is what phase 5's alert watches.
+            # remains is the gateway's own overhead, which is what the alert watches.
             with stage("upstream") as span:
                 async with asyncio.timeout(settings.request_deadline_s):
                     response = await send_with_retries(client, settings, upstream_request, record)

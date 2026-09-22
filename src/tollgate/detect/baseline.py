@@ -93,15 +93,10 @@ RULES: tuple[Rule, ...] = (
     ),
     # Reassigning the model's identity, which is how a persona attack opens.
     #
-    # The persona has to be an AI. An earlier version of this rule accepted any "act as a ..."
-    # and was the worst rule in the set by a distance: 35 of the baseline's 51 false positives
-    # on the eval corpus, because "act as a technical editor" and "you are a helpful assistant
-    # that summarises meeting notes" are what customers say all day. Requiring the persona to
-    # be a model rather than a profession cost 6 points of recall and bought 10 of precision -
-    # 0.811 to 0.908, with the false positive rate falling from 0.076 to 0.028. The recall is
-    # the cheaper thing to give up here, because the classifier tier covers the same ground
-    # and a false positive is added to whatever the classifier does, never cancelled by it.
-    # bench/results/detection_eval.txt is where that trade is recorded.
+    # The persona has to be an AI. Matching any "act as a ..." catches "act as a technical
+    # editor", which is what customers say all day, and costs far more in precision than the
+    # recall it buys: the classifier tier covers the same ground, while a false positive here
+    # is added to whatever the classifier does rather than cancelled by it.
     rule(
         "role_override",
         r"(?:\byou\s+are\s+now\b|\bfrom\s+now\s+on\b(?:\s*,)?\s+you\b|"

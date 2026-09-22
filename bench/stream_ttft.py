@@ -1,4 +1,4 @@
-"""Phase 3 baseline: how much the gateway adds to time to first token.
+"""How much the gateway adds to time to first token.
 
 Time to first token is what a user of a streaming app actually waits for; the rest of the
 response arrives while they read. It is also the number that exposes a buffering gateway,

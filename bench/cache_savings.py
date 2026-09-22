@@ -1,4 +1,4 @@
-"""Phase 6: what the exact cache is worth, and what it costs to ask.
+"""What the exact cache is worth, and what it costs to ask.
 
 Three numbers come out of this, and one caveat that matters more than any of them.
 

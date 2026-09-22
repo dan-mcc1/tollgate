@@ -24,7 +24,7 @@ everything, with a child for each stage that can be slow or can refuse:
 
 The one that matters is `upstream`: subtract it from the root and what is left is the
 gateway's own overhead, which is the number this project is judged on and the number the
-phase 5 alert watches.
+overhead alert watches.
 
 **Attributes are metadata only.** Tenant, model, method, token counts, cost, outcome.
 Never a prompt, never a response, never a header, never a query string. tests/
@@ -156,9 +156,9 @@ upstream_attempts = meter.create_counter(
     UPSTREAM_ATTEMPTS, unit="1", description="Upstream sends, retries included."
 )
 # A separate counter rather than a `cache` label on `requests_total`. A label there would
-# multiply the cardinality of every existing series by the number of cache outcomes, to
-# answer one question; a counter of its own answers it at the cost of one series per
-# outcome, and leaves the panels built in phase 5 reading exactly what they read before.
+# multiply the cardinality of every existing series by the number of cache outcomes to answer
+# one question; a counter of its own costs one series per outcome and leaves every existing
+# panel reading what it read before.
 cache_lookups = meter.create_counter(
     CACHE_LOOKUPS, unit="1", description="Cache outcomes by tenant, model and result."
 )
@@ -459,7 +459,7 @@ def header_carrier(headers: Sequence[tuple[bytes, bytes]]) -> dict[str, str]:
     return {name.decode("latin-1"): value.decode("latin-1") for name, value in headers}
 
 
-# --- what a request turned out to be -------------------------------------------------------
+# --- what a request was ---------------------------------------------------------------------
 
 
 @dataclass
@@ -490,9 +490,9 @@ class RequestFacts:
     output_verdict: str | None = None
     output_action: str | None = None
     output_findings: tuple[str, ...] = ()
-    # Milliseconds spent inspecting input, per tier. A dict rather than one number because
-    # a request can pass through both tiers, and "what did the classifier cost" is the
-    # question the phase 7 table has to answer.
+    # Milliseconds spent inspecting input, per tier. A dict rather than one number because a
+    # request can pass through both tiers, and "what did the classifier cost" is asked of the
+    # classifier alone.
     detect_ms: dict[str, float] = field(default_factory=dict)
     # Time waiting on the embedding model, which is provider time and not this
     # gateway's. Kept apart from `upstream_ms` because it is paid before the request
@@ -567,14 +567,11 @@ def emit_request_metrics(tenant: str | None, status_code: int, total_ms: float) 
     request_duration.record(total_ms, labels)
 
     if current.upstream_ms is not None or current.embedding_ms:
-        # Both round trips to the provider, added together. The semantic tier's
-        # embedding call is time spent waiting on the upstream exactly as the
-        # generation call is, and the only reason it needs saying is that it lives in a
-        # different span: leaving it out of this sum would file a 100 ms provider wait
-        # as gateway overhead, which is the one number this project is judged on. That
-        # would have made a cache lookup look like a performance regression in the
-        # service, put the phase 5 alert permanently in alarm, and broken comparability
-        # with the phase 1 baseline - which was measured before either call existed.
+        # Both round trips to the provider, added together. The semantic tier's embedding
+        # call is time spent waiting on the upstream exactly as the generation call is, and it
+        # only needs saying because it lives in a different span: leaving it out would file a
+        # 100 ms provider wait as gateway overhead, making a cache lookup look like a
+        # regression in the service and putting the overhead alert permanently in alarm.
         provider_ms = (current.upstream_ms or 0.0) + current.embedding_ms
         upstream_duration.record(provider_ms, labels)
         # Clamped at zero: the parts are measured by different clocks at different

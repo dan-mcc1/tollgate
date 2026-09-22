@@ -18,8 +18,8 @@ records where each row came from.
   * Negatives from `bench/data/security_adjacent.jsonl`, which is written by hand and is the
     interesting part: benign prompts that look hostile.
   * Negatives from `bench/data/app_prompts.jsonl`, also written by hand, and the set that
-    turned out to matter most. They are not adversarial at all - "Summarise this.", "Fix this
-    SQL.", "Hello." - they are simply what an application actually sends. The public
+    separates the detectors most sharply. They are not adversarial at all - "Summarise this.",
+    "Fix this SQL.", "Hello." - they are simply what an application actually sends. The public
     benchmarks' benign halves are full sentences and roleplay prompts, so a classifier can
     score well on them and still flag half of a real product's traffic.
 

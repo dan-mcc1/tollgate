@@ -4,9 +4,8 @@
     uv run python bench/detection_eval.py --model tiny     # just one
     uv run python bench/detection_eval.py --sweep          # thresholds, to choose one
 
-This is the deliverable of phase 7. The gateway's detection code is twenty minutes of regex
-and an ONNX session; the part that is worth anything is the table underneath, because a
-detector without one is a claim.
+The gateway's detection code is twenty minutes of regex and an ONNX session; the part that is
+worth anything is the table underneath, because a detector without one is a claim.
 
 **Accuracy is not reported, on purpose.** The corpus is 43% positive, so "always benign"
 scores 57% and reads like a passing grade. Precision, recall and the false positive rate are
@@ -23,10 +22,10 @@ not: a security engineer writing test cases, a developer pasting a log line that
 injection, "ignore the previous draft". That second number is the one that decides whether a
 tenant can be put in `block` mode, and it is the one nobody publishes.
 
-The third is `app_prompts.jsonl`, and it turned out to matter more than either: 28 prompts that
-are not adversarial in any way, only short - "Summarise this.", "Fix this SQL.", "Hello.". The
-public benign sets are full sentences and roleplay prompts, so a classifier can score well on
-them and still flag half of what a real product sends.
+The third is `app_prompts.jsonl`, and it separates the detectors more sharply than either: 28
+prompts that are not adversarial in any way, only short - "Summarise this.", "Fix this SQL.",
+"Hello.". The public benign sets are full sentences and roleplay prompts, so a classifier can
+score well on them and still flag half of what a real product sends.
 
 **Latency is measured where it is paid.** Per case, single-threaded, on the machine running
 this - which is not the machine running the gateway, so the absolute numbers matter less than
@@ -297,8 +296,8 @@ def sweep(name: str, scored: list[Scored]) -> list[str]:
 
     Derived from scores already computed, because the expensive part is the model and the
     cheap part is the comparison. The value this prints is what belongs on that model's
-    registry entry in detect/classifier.py - and, as with the semantic cache threshold in
-    phase 6, it belongs to the model rather than to this gateway.
+    registry entry in detect/classifier.py: a threshold is a property of the model rather
+    than of this gateway.
     """
     lines = ["", f"Threshold sweep - {name}", ""]
     header = (

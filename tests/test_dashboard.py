@@ -204,10 +204,9 @@ def test_the_committed_screenshots_match_the_committed_dashboard() -> None:
     that cannot be regenerated from the repository. If the JSON has been edited since
     they were taken, the page shows a dashboard that no longer exists.
 
-    The link is recorded rather than inferred from file times. Git does not store
-    modification times, so on a fresh checkout every file is written within the same
-    millisecond in whatever order the checkout uses - an earlier version of this test
-    compared mtimes and was decided in CI by whether the PNG sorted before the JSON.
+    The link is recorded rather than inferred from file times, because git does not store
+    modification times: on a fresh checkout every file is written within the same millisecond,
+    in whatever order the checkout happens to use.
     """
     recorded = json.loads((DASHBOARD.parent / "screenshots.json").read_text(encoding="utf-8"))
 

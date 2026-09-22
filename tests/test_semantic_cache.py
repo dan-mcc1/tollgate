@@ -305,11 +305,10 @@ async def test_the_embedding_wait_is_upstream_time_and_not_gateway_overhead(
 ) -> None:
     """The tier's own round trip must not be charged to the gateway.
 
-    An embedding call waits on the provider exactly as a generation call does, but it
-    lives in a different span - so unless it is added in, `total - upstream` files it as
-    overhead. That would make enabling a cache look like a latency regression in the
-    service, put the phase 5 alert permanently in alarm, and break comparison with the
-    phase 1 baseline, which was measured before either call existed.
+    An embedding call waits on the provider exactly as a generation call does, but it lives
+    in a different span - so unless it is added in, `total - upstream` files it as overhead.
+    That would make enabling a cache look like a latency regression in the service and put
+    the overhead alert permanently in alarm.
 
     The mock holds a steady 100 ms, so a semantic miss waits on it twice.
     """

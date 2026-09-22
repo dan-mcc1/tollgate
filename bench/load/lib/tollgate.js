@@ -16,8 +16,8 @@
 // **k6's timings are not the gateway's overhead.** `http_req_duration` includes the mock
 // holding the request for 100 ms, so it is dominated by the upstream. Subtracting two
 // distributions to remove it is wrong at the tail, which is the end anyone cares about.
-// The gateway already records total-minus-upstream per request (phase 5), so overhead
-// comes from scraping `/metrics` either side of the run and diffing the histogram, and
+// The gateway already records total-minus-upstream per request, so overhead comes from
+// scraping `/metrics` either side of the run and diffing the histogram, and
 // k6 is left to measure what only the client can see: throughput, errors, and the
 // latency a caller actually experienced.
 //

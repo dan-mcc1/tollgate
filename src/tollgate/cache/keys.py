@@ -159,10 +159,9 @@ def request_block_reason(
 ) -> str | None:
     """Why this request may not touch the cache, or None if it may.
 
-    A blocked request is neither looked up nor stored: the gateway behaves exactly as it
-    did before this phase existed. A reason is returned rather than a boolean because it
-    goes onto a span, and "why did the cache do nothing for this request" is a question
-    somebody will eventually ask of one specific request.
+    A blocked request is neither looked up nor stored. A reason is returned rather than a
+    boolean because it goes onto a span, and "why did the cache do nothing for this
+    request" is a question somebody eventually asks of one specific request.
     """
     if payload is None:
         return "unparseable_body"

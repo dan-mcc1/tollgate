@@ -34,7 +34,7 @@ logger = logging.getLogger("tollgate.cache")
 
 @dataclass(frozen=True)
 class CachedResponse:
-    """An answer the gateway already had, and what it originally cost to produce."""
+    """An answer the gateway already had, and what it cost to produce."""
 
     entry_id: uuid.UUID
     response: dict[str, Any]

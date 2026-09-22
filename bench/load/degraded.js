@@ -55,12 +55,10 @@ export const options = {
       rate: RATE,
       timeUnit: '1s',
       duration: DURATION,
-      // Sized from the concurrency this mix actually implies, not from the rate. The
-      // first version used a flat multiple of the rate, which at 40/s asked k6 to hold
-      // 320 workers for about 18 requests' worth of real concurrency - and the surplus
-      // workers opened enough connections through Docker's NAT that k6 started failing
-      // to dial the gateway at all. Those showed up as responses with no status, which
-      // reads exactly like the gateway dropping requests. It was the load generator.
+      // Sized from the concurrency this mix implies, not from a flat multiple of the rate.
+      // Surplus workers are not free: each opens connections, and enough of them through
+      // Docker's NAT makes k6 fail to dial the gateway at all, which shows up as responses
+      // with no status and reads exactly like the gateway dropping requests.
       preAllocatedVUs: Math.ceil(CONCURRENCY * 3),
       maxVUs: Math.ceil(CONCURRENCY * 8),
     },

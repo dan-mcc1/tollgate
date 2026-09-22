@@ -81,9 +81,8 @@ class ModelSpec:
     # The model's own context limit, in tokens, which is what makes windowing necessary.
     max_tokens: int
     # The cut-off between flagged and clean, for this model and no other. A threshold is a
-    # property of the model it was measured against - the same lesson the semantic cache
-    # threshold taught in phase 6 - so it lives on the spec rather than in a global setting,
-    # and bench/detection_eval.py is what sets it.
+    # property of the model it was measured against, so it lives on the spec rather than in a
+    # global setting, and bench/detection_eval.py is what sets it.
     default_threshold: float
     # What the graph weighs on disk, for the table in the README: the trade-off being
     # measured is precision against latency *and* image size.

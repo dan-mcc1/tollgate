@@ -1,4 +1,4 @@
-"""Phase 4: how wrong a rate limit gets when it is held in the wrong place.
+"""How wrong a rate limit gets when it is held in the wrong place.
 
 A token bucket kept in a container's own memory is correct for one container. Run three
 and each one refills a bucket of its own, so a tenant entitled to R requests a minute

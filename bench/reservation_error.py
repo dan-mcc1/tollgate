@@ -1,4 +1,4 @@
-"""Phase 4: how far a streamed request's budget reservation is from what it really cost.
+"""How far a streamed request's budget reservation is from what it really cost.
 
 A budget has to be enforced before the upstream is called, and a streamed response's cost
 is not known until it ends. The gateway therefore reserves an estimate built from the
