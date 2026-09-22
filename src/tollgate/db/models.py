@@ -5,6 +5,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -22,6 +23,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 # supported truncation rather than a lesser model, and it is a quarter of the storage and
 # of the arithmetic in every distance comparison. `cache_embedding_dimensions` must agree.
 EMBEDDING_DIMENSIONS = 768
+
+# The detection policy a new tenant gets. Monitor rather than block, for the reasons in
+# detect/service.py; the literal lives here because this module is a leaf that the rest of
+# the package imports, and tests/test_detection.py pins it to `detect.service.DEFAULT_MODE`
+# so the two cannot drift apart.
+DEFAULT_DETECTION_MODE = "monitor"
 
 # Deterministic constraint names, so autogenerate diffs stay stable across databases.
 NAMING_CONVENTION = {
@@ -54,9 +61,23 @@ class Tenant(Base):
     # value, while a budget is what a customer agreed to pay. There is no honest number
     # to invent for that, and inventing one cuts a paying tenant off mid-month.
     monthly_budget_microcents: Mapped[int | None] = mapped_column(BigInteger)
+    # What happens to a request the gateway reads as an injection attempt: "off" (not
+    # inspected at all), "monitor" (inspected, recorded, forwarded anyway) or "block"
+    # (refused with a 403). Monitor is the default because that is how detection is
+    # actually rolled out - against real traffic, until somebody has read the false
+    # positive rate - so blocking is opt-in per tenant. See detect/service.py.
+    detection_mode: Mapped[str] = mapped_column(String(16), server_default=DEFAULT_DETECTION_MODE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="tenant")
+
+    # A closed set, enforced by the database rather than by the one CLI command that
+    # writes it. The gateway reads this column on every request, and a value it has never
+    # heard of would have to be interpreted: the code degrades an unknown mode to monitor,
+    # and this constraint means it never has to.
+    __table_args__ = (
+        CheckConstraint("detection_mode IN ('off', 'monitor', 'block')", name="detection_mode"),
+    )
 
 
 class ApiKey(Base):
@@ -135,6 +156,38 @@ class UsageRecord(Base):
     # on purpose: adding a notional saving into the ledger's money column would inflate
     # every bill and every budget check that reads it.
     cost_avoided_microcents: Mapped[int | None] = mapped_column(BigInteger)
+    # What the input inspection made of this request: "clean", "flagged", or "error" when
+    # the inspection itself failed and the request was forwarded anyway. NULL means nothing
+    # looked - detection off for the fleet, or "off" for this tenant - which is different
+    # from a request that was inspected and found clean. See detect/service.py.
+    input_verdict: Mapped[str | None] = mapped_column(String(16))
+    # Which tier reached that verdict: "baseline" or "classifier". Kept because the two
+    # disagree, and a flag that turns out to be wrong is investigated by asking which one
+    # raised it.
+    input_tier: Mapped[str | None] = mapped_column(String(16))
+    # The baseline rule that fired, by id - never the text that matched it. The text is the
+    # prompt, and the prompt has no more business in the ledger than it has in a span.
+    input_rule: Mapped[str | None] = mapped_column(String(64))
+    # The classifier's probability that this is an injection attempt. NULL when only the
+    # baseline ran, which is a different statement from a score of zero.
+    input_score: Mapped[float | None]
+    # What was then done: "allowed" or "blocked". Stored rather than derived from the
+    # verdict and the tenant's mode, because the mode is a column somebody can change this
+    # afternoon and the ledger is a record of what happened. Reading today's policy to
+    # explain last week's refusal is how a ledger starts lying.
+    input_action: Mapped[str | None] = mapped_column(String(16))
+    # The same three columns for the other direction: what the scanner made of the response.
+    output_verdict: Mapped[str | None] = mapped_column(String(16))
+    # Which shapes were found, by rule id, comma separated and sorted - never the text that
+    # matched them. Wide enough for every rule in detect/scanner.py at once, so a response
+    # full of findings is recorded in full rather than truncated at some arbitrary count.
+    output_findings: Mapped[str | None] = mapped_column(String(400))
+    # "allowed", "blocked" (the caller got none of it) or "truncated" (a stream stopped part
+    # way through, so the caller got the part that had already been relayed). The third value
+    # is the whole reason this column is not a boolean: containing a leak and noticing one
+    # after the fact are different outcomes, and a report that conflated them would overstate
+    # what streaming enforcement actually achieves.
+    output_action: Mapped[str | None] = mapped_column(String(16))
 
     # Every read of this table is "one tenant, one range of time": the budget check on
     # each request, and the spend rollup behind /v1/spend. Leading with tenant_id narrows

@@ -132,6 +132,48 @@ class Settings(BaseSettings):
     # See the note on filtered vector search in semantic.py.
     cache_hnsw_ef_search: int = 100
 
+    # Detection: inspecting what a tenant's users are sending, on the way in. This is the
+    # fleet-wide switch, for turning inspection off everywhere without editing a row per
+    # tenant. What happens to a flagged request is not here: it is `tenants.detection_mode`,
+    # because refusing a customer's traffic is a per-customer decision rather than a
+    # property of this deployment, and the default there is monitor.
+    detection_enabled: bool = True
+    # Which classifier to run, by name from detect/classifier.py's registry ("tiny",
+    # "deberta-base"), or empty for the regex baseline alone. Empty is the default because a
+    # checkout has no model file in it: the Dockerfile fetches one and sets this, so the
+    # deployed gateway runs the classifier and a test run needs neither the file nor a
+    # network. A name that is set but not present on disk refuses to start, rather than
+    # quietly serving a regex while the dashboard says otherwise.
+    detection_classifier_model: str = ""
+    detection_model_dir: str = "models"
+    # The cut-off between flagged and clean. None means the value measured for that model
+    # and recorded on its registry entry, which is where a threshold belongs: it is a
+    # property of the model, as phase 6 learned the hard way about embedding similarity.
+    detection_threshold: float | None = None
+    # How long inference may take before the request gives up on it. A miss is recorded as a
+    # failure to inspect and the request is forwarded: the caller is waiting for a model
+    # response, and making them wait longer for a second opinion about their own prompt is
+    # the wrong way to spend their patience.
+    detection_timeout_ms: float = 250.0
+    # ONNX Runtime threads per session. One, because a Fargate task runs dozens of requests
+    # on a couple of vCPUs: four threads make one request faster and every other one slower.
+    detection_threads: int = 1
+    # These models read 512 tokens, and a long prompt is therefore scored in overlapping
+    # windows - truncating instead would mean "put the payload at the end" always worked.
+    # The cap bounds what an enormous prompt can cost; past it the classifier has not seen
+    # everything and the regex baseline, which reads all of it, is what covers the tail.
+    detection_max_windows: int = 4
+    detection_window_stride_tokens: int = 64
+    # Output scanning on a stream, in `block` mode only: how far behind the upstream the relay
+    # runs, so that a credential can be found while it is still held rather than after it has
+    # been delivered. This number is the length of leak the gateway can still contain, and it
+    # is paid for in time to first token - nothing is released until this much has arrived.
+    # A kilobyte comfortably exceeds the longest pattern in detect/scanner.py, which is what
+    # matters: a private key is kilobytes long but announces itself in its first forty bytes.
+    # In `monitor` mode the window is zero, because delaying a stream in order to do nothing
+    # about what is found would buy latency and no containment.
+    detection_stream_holdback_bytes: int = 1024
+
     # How long a price inserted by another container can take to come into force here.
     # Prices change a few times a year, so a stale minute costs nothing and saves a
     # database round trip on every single request.

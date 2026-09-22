@@ -43,6 +43,21 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
       - run: uv sync --locked
+
+      # The classifier's graph is a build artefact, not a file in the repository, so without
+      # this the tests that load a real model skip themselves and CI never finds out that a
+      # repinned revision no longer loads - or that its labels have been swapped. Cached on
+      # the pinned revision, so it is one 18 MB download per repin rather than per run.
+      - name: Restore the pinned classifier
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: detector-${{ hashFiles('src/tollgate/detect/classifier.py') }}
+      - name: Fetch the pinned classifier
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: uv run python -m tollgate.detect.fetch tiny
+
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy

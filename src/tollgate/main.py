@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from tollgate.auth import TenantContext
 from tollgate.cache.service import build_cache
 from tollgate.config import get_settings
+from tollgate.detect.service import build_detection
 from tollgate.errors import GatewayError, handle_gateway_error
 from tollgate.health import UpstreamProbe
 from tollgate.health import router as health_router
@@ -50,6 +51,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # above: a cache with its own pool would compete with the ledger for connections,
     # and the ledger is the one that must not wait.
     app.state.cache = build_cache(settings, app.state.sessionmaker, http_client)
+    # Nothing to close and nothing to connect to: the baseline is compiled regexes, and
+    # the classifier's model file is loaded once, here, rather than on the first request
+    # that needs it - a cold start is a deploy's problem and not a caller's.
+    app.state.detection = build_detection(settings)
 
     try:
         yield

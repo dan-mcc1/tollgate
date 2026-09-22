@@ -13,6 +13,13 @@ The shape of the problem, and what each piece of this file does about it:
   * A slow reader must not turn into unbounded memory. `yield` waits until the client
     has taken the chunk, and only then is the next one read from the upstream, so a slow
     reader slows the whole chain instead of filling a buffer.
+  * The response has to be inspected on the way past, and a decision about whether it may be
+    delivered has to be made before all of it has been seen. In `monitor` mode the relay
+    scans and records; in `block` mode it runs a fixed number of bytes behind the upstream,
+    so a credential found inside the unreleased window is dropped rather than delivered and
+    the stream is cut off with an error event. The window is the length of leak that can
+    still be contained, and it is paid for in time to first token: nothing is released until
+    that much has arrived. See detect/service.py's ResponseInspection.
 """
 
 import asyncio
@@ -31,9 +38,17 @@ from tollgate.auth import TenantContext
 from tollgate.cache.keys import MISS
 from tollgate.cache.replay import assemble, hit_headers, stream_events
 from tollgate.cache.replay import response_media_type as replay_media_type
-from tollgate.cache.service import CacheService
+from tollgate.cache.service import DISABLED, CacheService
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
+from tollgate.detect.service import (
+    DetectionService,
+    apply_output_verdict,
+    apply_verdict,
+    prompt_blocked,
+    response_blocked,
+    response_text,
+)
 from tollgate.errors import GatewayError
 from tollgate.limits import BudgetGuard
 from tollgate.proxy.passthrough import (
@@ -117,6 +132,7 @@ async def proxy_stream_generate_content(
     pricebook: PriceBook = request.app.state.pricebook
     budget: BudgetGuard = request.app.state.budget
     cache: CacheService = request.app.state.cache
+    detection: DetectionService = request.app.state.detection
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -136,19 +152,72 @@ async def proxy_stream_generate_content(
     reservation = await budget.reserve(tenant, model, body)
 
     sse = is_sse_request(request)
-    lookup = await cache.lookup(
-        tenant_id=tenant.tenant_id,
-        model=model,
-        query_items=list(request.query_params.multi_items()),
-        body=body,
+    # Never raises; see detect/service.py, and the note there on why inspection runs before
+    # the cache is asked. A blocked request is refused below, once there is something to
+    # write the row with.
+    verdict = await detection.inspect(mode=tenant.detection_mode, body=body)
+    apply_verdict(record, verdict)
+
+    lookup = (
+        DISABLED
+        if verdict.blocked
+        else await cache.lookup(
+            tenant_id=tenant.tenant_id,
+            model=model,
+            query_items=list(request.query_params.multi_items()),
+            body=body,
+        )
     )
     record.cache_status = lookup.status
     record.cache_similarity = lookup.similarity
+
+    async def close_books() -> None:
+        """One ledger row, then the settlement, for a request that opened no upstream stream.
+
+        The two endings that use this - a refused request and one answered from the cache -
+        have nothing to report about the provider, so `upstream_latency_ms` stays NULL: there
+        was no call to time. `finish()` below is this plus the upstream span.
+        """
+        await write_usage(
+            sessionmaker,
+            pricebook,
+            record,
+            embedding_tokens=lookup.embedding_tokens,
+            embedding_model=cache.embedding_model,
+        )
+        await budget.settle(reservation, record.cost_microcents)
+
+    # --- refused before anything was sent: an ordinary error, and one row ----------------
+
+    if verdict.blocked:
+        error = prompt_blocked()
+        record.status_code, record.error_source, record.error_code = (
+            error.status_code,
+            "gateway",
+            error.code,
+        )
+        await close_books()
+        raise error
 
     # --- a hit: no upstream, no span for one, and a stream built here --------------------
 
     if lookup.entry is not None:
         entry = lookup.entry
+        # Whole in hand, so this is the unary decision rather than the streaming one: a
+        # refusal happens before a single event, instead of cutting a stream off part way.
+        # Raising here is still safe - nothing has been written to the wire yet.
+        cached_output = detection.scan_response(mode=tenant.detection_mode, payload=entry.response)
+        apply_output_verdict(record, cached_output)
+        if cached_output.blocked:
+            error = response_blocked()
+            record.status_code, record.error_source, record.error_code = (
+                error.status_code,
+                "gateway",
+                error.code,
+            )
+            await close_books()
+            raise error
+
         record.status_code = 200
         record.error_source = record.error_code = None
         record.input_tokens = entry.input_tokens
@@ -170,19 +239,8 @@ async def proxy_stream_generate_content(
                 raise
             finally:
                 await run_even_if_cancelled(
-                    finish_cached(), "ledger row and budget settlement for a cached stream"
+                    close_books(), "ledger row and budget settlement for a cached stream"
                 )
-
-        async def finish_cached() -> None:
-            # upstream_latency_ms stays NULL: there was no upstream call to time.
-            await write_usage(
-                sessionmaker,
-                pricebook,
-                record,
-                embedding_tokens=lookup.embedding_tokens,
-                embedding_model=cache.embedding_model,
-            )
-            await budget.settle(reservation, record.cost_microcents)
 
         return StreamingResponse(
             replay(),
@@ -219,14 +277,7 @@ async def proxy_stream_generate_content(
         if record.upstream_ttfb_ms is not None:
             upstream_span.set_attribute("tollgate.upstream.ttfb_ms", record.upstream_ttfb_ms)
         upstream_span.end()
-        await write_usage(
-            sessionmaker,
-            pricebook,
-            record,
-            embedding_tokens=lookup.embedding_tokens,
-            embedding_model=cache.embedding_model,
-        )
-        await budget.settle(reservation, record.cost_microcents)
+        await close_books()
 
     # --- before the first byte: ordinary error handling still applies --------------------
 
@@ -264,6 +315,10 @@ async def proxy_stream_generate_content(
 
     record.status_code = 200
     record.error_source = record.error_code = None
+    # One inspection for this response, or None when this tenant is not being inspected. Made
+    # here rather than inside the relay so that the mode is read once, at the start, and a
+    # policy change mid-response cannot apply to half a stream.
+    inspection = detection.response_stream(mode=tenant.detection_mode)
 
     async def relay() -> AsyncIterator[bytes]:
         scanner = StreamScanner(sse=sse)
@@ -278,6 +333,11 @@ async def proxy_stream_generate_content(
         # that matters.
         collected: list[dict[str, Any]] | None = [] if lookup.status == MISS else None
         collected_bytes = 0
+        # Bytes scanned but not yet released, and how many of them must stay unreleased.
+        # Zero unless this tenant is in `block` mode: see ResponseInspection for why a
+        # window that cannot stop anything is not worth the latency it costs.
+        holdback = inspection.holdback_bytes if inspection is not None else 0
+        pending = bytearray()
         try:
             async for chunk in upstream.aiter_raw():
                 if record.upstream_ttfb_ms is None:
@@ -286,6 +346,7 @@ async def proxy_stream_generate_content(
                     collected_bytes += len(chunk)
                     if collected_bytes > cache.max_response_bytes:
                         collected = None
+                blocked = False
                 for event in scanner.feed(chunk):
                     apply_usage_payload(record, event)  # running totals; the last one wins
                     if collected is not None:
@@ -296,13 +357,49 @@ async def proxy_stream_generate_content(
                         # response is incomplete, whatever the 200 says.
                         record.error_source, record.error_code = "upstream", status
                         collected = None  # never cache an answer that did not finish
-                yield chunk  # waits for the caller to take it: backpressure, not buffering
+                    if inspection is not None:
+                        # The text of each event as it passes, not the raw bytes: the same
+                        # string the unary path scans, so the two directions of one policy
+                        # cannot disagree about what a response said. What is held back is
+                        # measured in raw bytes, because raw bytes are what gets relayed.
+                        blocked = inspection.feed(response_text(event)) or blocked
+
+                if not holdback:
+                    yield chunk  # waits for the caller to take it: backpressure, not buffering
+                    continue
+
+                pending += chunk
+                if blocked:
+                    # A finding inside the window that has not been relayed yet. The pending
+                    # bytes are dropped rather than sent, the caller is told inside the stream
+                    # that the rest was withheld, and the relay stops pulling from the
+                    # upstream. Whatever was released before this point is already read.
+                    record.error_source, record.error_code = "gateway", "response_blocked"
+                    collected = None
+                    pending.clear()
+                    yield error_event(sse, "response_blocked")
+                    break
+                if len(pending) > holdback:
+                    release = len(pending) - holdback
+                    yield bytes(pending[:release])
+                    del pending[:release]
+            else:
+                # The loop ran to its end rather than breaking on a finding, so the tail that
+                # was being held is clean and goes now.
+                if pending:
+                    yield bytes(pending)
+
+            if inspection is not None:
+                apply_output_verdict(record, inspection.verdict())
 
             # Only here, after the loop has run to its end without raising. Every other
             # way out of this generator - a dropped upstream, a caller hanging up - leaves
             # a partial response, and a partial response is the one thing a cache must
             # never keep: it would be replayed as though it were whole.
-            if collected and record.error_code is None:
+            #
+            # `output_findings` is checked too: an answer carrying a credential must not be
+            # stored, or one leak is replayed to everybody who later asks the same question.
+            if collected and record.error_code is None and not record.output_findings:
                 await cache.store(
                     lookup,
                     tenant_id=tenant.tenant_id,

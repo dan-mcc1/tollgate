@@ -14,7 +14,7 @@ import pytest
 
 from dashboards import manifest
 from tests.conftest import ROOT
-from tollgate.telemetry import INSTRUMENT_NAMES, outcome_for
+from tollgate.telemetry import INSTRUMENT_NAMES, POLICY_REFUSALS, outcome_for
 
 DASHBOARD = ROOT / "dashboards" / "tollgate.json"
 ALERT = ROOT / "infra" / "grafana" / "main.tf"
@@ -33,6 +33,8 @@ OUTCOMES = {
     "budget_exhausted",
     "rate_limited",
     "unsupported",
+    "prompt_blocked",
+    "response_blocked",
     "upstream_error",
     "gateway_error",
 }
@@ -111,6 +113,8 @@ def test_outcome_for_produces_exactly_the_outcomes_the_dashboard_colours(
     whatever Grafana hands out next, which moves as series come and go; a colour with no
     outcome is a panel legend entry that never appears."""
     produced = {outcome_for(code, None) for code in (200, 401, 402, 429, 500, 502, 501)}
+    # The two policy refusals share a status, so the code is what tells them apart.
+    produced |= {outcome_for(403, None, code) for code in POLICY_REFUSALS}
     produced.add(outcome_for(200, "upstream"))
     produced.add(outcome_for(500, "upstream"))
 
@@ -247,10 +251,17 @@ def test_no_screenshot_is_missing_from_the_manifest() -> None:
     )
 
 
-def test_every_screenshot_is_shown_in_the_readme() -> None:
+def test_every_screenshot_is_shown_in_the_prose() -> None:
     """A screenshot nobody references is one nobody notices going stale, and the test
-    above would keep insisting it be retaken forever."""
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    above would keep insisting it be retaken forever.
+
+    The README and everything under docs/ count, because they are one document as far as a
+    reader is concerned: the README carries the headline screen and docs/operations.md the
+    rest. Checking only the README would let a screenshot referenced from the docs alone
+    fail this, and checking only that a file exists somewhere would miss the point.
+    """
+    pages = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+    prose = "\n".join(page.read_text(encoding="utf-8") for page in pages)
 
     for screenshot in sorted(DASHBOARD.parent.glob("*.png")):
-        assert f"dashboards/{screenshot.name}" in readme, f"{screenshot.name} is unreferenced"
+        assert f"dashboards/{screenshot.name}" in prose, f"{screenshot.name} is unreferenced"

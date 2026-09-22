@@ -10,6 +10,9 @@ venv/
 .ruff_cache/
 .pytest_cache/
 bench/
+# The image fetches its own model in a build stage rather than copying a local one, so a
+# developer's models/ directory never decides what a deployed gateway runs.
+models/
 dashboards/
 infra/
 tests/

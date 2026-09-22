@@ -8,6 +8,7 @@ import asyncio
 import json
 import random
 import time
+from typing import Any
 
 import httpx
 from fastapi import Request, Response
@@ -17,9 +18,16 @@ from tollgate.auth import TenantContext
 from tollgate.cache.exact import CachedResponse
 from tollgate.cache.keys import request_payload
 from tollgate.cache.replay import hit_headers
-from tollgate.cache.service import CacheService
+from tollgate.cache.service import DISABLED, CacheService
 from tollgate.config import Settings
 from tollgate.db.models import UsageRecord
+from tollgate.detect.service import (
+    DetectionService,
+    apply_output_verdict,
+    apply_verdict,
+    prompt_blocked,
+    response_blocked,
+)
 from tollgate.errors import GatewayError
 from tollgate.limits import BudgetGuard
 from tollgate.telemetry import stage
@@ -144,6 +152,27 @@ def serve_from_cache(record: UsageRecord, entry: CachedResponse, status: str) ->
     )
 
 
+def screen_response(
+    record: UsageRecord,
+    detection: DetectionService,
+    mode: str,
+    payload: dict[str, Any] | None,
+) -> None:
+    """Scan a complete response before any of it is delivered, and refuse it if policy says so.
+
+    Both endings of the unary path come through here - a fresh upstream response and a cached
+    one - because the question is what is about to be delivered, not where it came from.
+
+    Raising is safe at this point precisely because nothing has been written to the wire yet:
+    the caller gets a 403 with a gateway error body instead of a 200 with a credential in it.
+    The streamed path has no such luxury; see proxy/streaming.py.
+    """
+    verdict = detection.scan_response(mode=mode, payload=payload)
+    apply_output_verdict(record, verdict)
+    if verdict.blocked:
+        raise response_blocked()
+
+
 def to_response(upstream: httpx.Response, cache_status: str | None = None) -> Response:
     headers = {
         name: value
@@ -167,6 +196,7 @@ async def proxy_generate_content(
     pricebook: PriceBook = request.app.state.pricebook
     budget: BudgetGuard = request.app.state.budget
     cache: CacheService = request.app.state.cache
+    detection: DetectionService = request.app.state.detection
 
     record = UsageRecord(
         tenant_id=tenant.tenant_id,
@@ -183,25 +213,42 @@ async def proxy_generate_content(
     # ledger row, because the request was never sent and so was never spent.
     reservation = await budget.reserve(tenant, model, body)
 
-    # Then ask the cache, which may make the upstream call unnecessary. See the note in
-    # cache/service.py on why this comes after the reservation rather than before it.
-    lookup = await cache.lookup(
-        tenant_id=tenant.tenant_id,
-        model=model,
-        query_items=list(request.query_params.multi_items()),
-        body=body,
-    )
-    record.cache_status = lookup.status
-    record.cache_similarity = lookup.similarity
+    # Then inspect what is being sent, which never raises: a blocked request is refused
+    # below, inside the try, so that the refusal is recorded and the reservation released
+    # like any other ending. See detect/service.py on why this runs before the cache.
+    verdict = await detection.inspect(mode=tenant.detection_mode, body=body)
+    apply_verdict(record, verdict)
 
-    # Started after the cache has been consulted, so `upstream_latency_ms` times the
-    # upstream call and nothing else. Starting it earlier would fold the lookup - and,
-    # with the semantic tier on, a whole embedding round trip - into a column named for
-    # the provider, which is read as provider time by the dashboard and the README alike.
-    started = time.perf_counter()
+    # None until the upstream call is actually about to happen. The finally below uses it
+    # to decide whether there is an upstream latency to record at all: a blocked request
+    # and a cache hit both reach the ledger without one, and a zero there would read as a
+    # provider that answered instantly.
+    started: float | None = None
+    lookup = DISABLED
 
     try:
+        if verdict.blocked:
+            raise prompt_blocked()
+
+        # The cache may make the upstream call unnecessary. See the note in
+        # cache/service.py on why this comes after the reservation rather than before it.
+        lookup = await cache.lookup(
+            tenant_id=tenant.tenant_id,
+            model=model,
+            query_items=list(request.query_params.multi_items()),
+            body=body,
+        )
+        record.cache_status = lookup.status
+        record.cache_similarity = lookup.similarity
+
+        # Started after the cache has been consulted, so `upstream_latency_ms` times the
+        # upstream call and nothing else. Starting it earlier would fold the lookup - and,
+        # with the semantic tier on, a whole embedding round trip - into a column named for
+        # the provider, which is read as provider time by the dashboard and the README alike.
+        started = time.perf_counter()
+
         if lookup.entry is not None:
+            screen_response(record, detection, tenant.detection_mode, lookup.entry.response)
             return serve_from_cache(record, lookup.entry, lookup.status or "")
         upstream_request = build_upstream_request(
             client, request, settings, f"/v1beta/models/{model}:{method}", body
@@ -229,16 +276,23 @@ async def proxy_generate_content(
         if response.is_success:
             record.error_source = record.error_code = None
             apply_usage_metadata(record, response.content)
+            payload = request_payload(response.content)
+            # Before the cache is offered anything. A response carrying a credential must not
+            # be stored, or the leak is replayed to every later caller asking the same
+            # question - and this raises when policy says to withhold it, which skips the
+            # store below without the call site needing a second condition.
+            screen_response(record, detection, tenant.detection_mode, payload)
             # Offered to the cache before the response is handed back, so the next
             # identical request finds it. The ledger write below is already on this path,
             # so this is a second insert rather than the first; `store` refuses quietly
             # when the response is not one worth keeping, and never raises.
-            await cache.store(
-                lookup,
-                tenant_id=tenant.tenant_id,
-                model=model,
-                response=request_payload(response.content),
-            )
+            if not record.output_findings:
+                await cache.store(
+                    lookup,
+                    tenant_id=tenant.tenant_id,
+                    model=model,
+                    response=payload,
+                )
         else:
             record.error_source = "upstream"
             record.error_code = (
@@ -252,10 +306,10 @@ async def proxy_generate_content(
         record.error_code = exc.code
         raise
     finally:
-        if lookup.entry is None:
-            # Left NULL on a hit: no upstream call was made, and zero would read as one
-            # that returned instantly. telemetry.record_usage explains what the overhead
-            # histogram does with that.
+        if started is not None and lookup.entry is None:
+            # Left NULL on a hit, and on a refusal: no upstream call was made, and zero
+            # would read as one that returned instantly. telemetry.record_usage explains
+            # what the overhead histogram does with that.
             record.upstream_latency_ms = round((time.perf_counter() - started) * 1000)
         # exactly one row, priced, whatever happened above
         await write_usage(

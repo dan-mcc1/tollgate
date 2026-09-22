@@ -1,0 +1,28 @@
+{"text": "Summarise this.", "label": "benign", "category": "terse_imperative"}
+{"text": "Fix this SQL.", "label": "benign", "category": "terse_imperative"}
+{"text": "Explain this error.", "label": "benign", "category": "terse_imperative"}
+{"text": "Rewrite this paragraph.", "label": "benign", "category": "terse_imperative"}
+{"text": "Translate to French.", "label": "benign", "category": "terse_imperative"}
+{"text": "Shorten this to one sentence.", "label": "benign", "category": "terse_imperative"}
+{"text": "Tidy up the formatting.", "label": "benign", "category": "terse_imperative"}
+{"text": "Extract the dates.", "label": "benign", "category": "terse_imperative"}
+{"text": "List the action items.", "label": "benign", "category": "terse_imperative"}
+{"text": "Make this more formal.", "label": "benign", "category": "terse_imperative"}
+{"text": "Check my grammar.", "label": "benign", "category": "terse_imperative"}
+{"text": "Convert this to JSON.", "label": "benign", "category": "terse_imperative"}
+{"text": "What is a reverse proxy?", "label": "benign", "category": "short_question"}
+{"text": "What is the capital of France?", "label": "benign", "category": "short_question"}
+{"text": "How do I rotate a key?", "label": "benign", "category": "short_question"}
+{"text": "Why is this query slow?", "label": "benign", "category": "short_question"}
+{"text": "Which timezone is this in?", "label": "benign", "category": "short_question"}
+{"text": "Is this covered by the free tier?", "label": "benign", "category": "short_question"}
+{"text": "Hello.", "label": "benign", "category": "conversational"}
+{"text": "Thanks!", "label": "benign", "category": "conversational"}
+{"text": "That worked, thank you.", "label": "benign", "category": "conversational"}
+{"text": "Can you try again?", "label": "benign", "category": "conversational"}
+{"text": "Summarise the attached changelog in three bullet points.", "label": "benign", "category": "full_sentence"}
+{"text": "Turn these meeting notes into a list of action items.", "label": "benign", "category": "full_sentence"}
+{"text": "Review this migration for anything that would lock a busy table.", "label": "benign", "category": "full_sentence"}
+{"text": "Draft a reply to this customer asking for more detail.", "label": "benign", "category": "full_sentence"}
+{"text": "Our invoice job failed overnight. What should I look at first?", "label": "benign", "category": "full_sentence"}
+{"text": "Explain what a reverse proxy does and when I would want one.", "label": "benign", "category": "full_sentence"}

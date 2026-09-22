@@ -15,6 +15,7 @@ everything, with a child for each stage that can be slow or can refuse:
       authenticate          hashed key to tenant, one query
       rate_limit            token bucket, memory or Redis
       budget.reserve        ledger read or Redis script
+      detect.input          the regex baseline, then the classifier
       cache.lookup          the normalised request hash, one query
       upstream              the provider call, retries included - absent on a hit
       cache.store           the fresh response, kept for next time
@@ -77,6 +78,11 @@ meter = metrics.get_meter(SCOPE)
 # What the gateway itself adds, in milliseconds. Single-digit territory, so the
 # boundaries are too: a p99 that lands between 10 and 25 tells nobody anything.
 OVERHEAD_BUCKETS_MS = [1.0, 2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 250.0]
+# One pass of inspection, on the way in or the way out. The tiers live three orders of
+# magnitude apart - a regex sweep is tens of microseconds, a transformer on a CPU is tens of
+# milliseconds - so the boundaries have to span both, or the answer for one of them is
+# "the last bucket".
+DETECT_BUCKETS_MS = [0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0]
 # A model call. Hundreds of milliseconds to a minute, so seconds-scale boundaries.
 UPSTREAM_BUCKETS_MS = [
     50.0,
@@ -104,6 +110,10 @@ UPSTREAM_ATTEMPTS = "tollgate.upstream.attempts"
 CACHE_LOOKUPS = "tollgate.cache.lookups"
 CACHE_SAVINGS = "tollgate.cache.savings"
 CACHE_EMBEDDING_SPEND = "tollgate.cache.embedding.spend"
+DETECTIONS = "tollgate.detections"
+DETECT_DURATION = "tollgate.detect.duration"
+OUTPUT_SCANS = "tollgate.output.scans"
+OUTPUT_FINDINGS = "tollgate.output.findings"
 
 INSTRUMENT_NAMES = frozenset(
     {
@@ -117,6 +127,10 @@ INSTRUMENT_NAMES = frozenset(
         CACHE_LOOKUPS,
         CACHE_SAVINGS,
         CACHE_EMBEDDING_SPEND,
+        DETECTIONS,
+        DETECT_DURATION,
+        OUTPUT_SCANS,
+        OUTPUT_FINDINGS,
     }
 )
 
@@ -160,6 +174,34 @@ cache_embedding_spend = meter.create_counter(
     CACHE_EMBEDDING_SPEND,
     unit="1",
     description="Micro-cents spent on embeddings, by tenant and model.",
+)
+
+
+# Verdicts, by what was concluded and what was then done about it. Its own counter rather
+# than labels on `requests_total`, for the reason `cache_lookups` is: a verdict label there
+# would multiply the cardinality of every existing series to answer one question, and a
+# monitored tenant's flagged request is an `ok` request that happens to have been flagged.
+detections = meter.create_counter(
+    DETECTIONS, unit="1", description="Input verdicts by tenant, model, verdict, tier and action."
+)
+# What inspection cost, per tier. This is the number that decides whether the classifier can
+# sit on the request path at all, and it is deliberately *not* subtracted from the overhead
+# histogram: the gateway chose to spend it, so it belongs in the gateway's own cost.
+detect_duration = meter.create_histogram(
+    DETECT_DURATION, unit="ms", description="Time spent inspecting, by tier."
+)
+# Responses scanned, by what was concluded and what was done. Separate from `detections` so
+# that "how much of our traffic is inspected on the way out" and "on the way in" are two
+# questions with two answers, rather than one series with a direction label that every
+# existing panel would then have to filter on.
+output_scans = meter.create_counter(
+    OUTPUT_SCANS, unit="1", description="Response scans by tenant, model, verdict and action."
+)
+# What was found, by rule. The cardinality is the rule set - a dozen or so, bounded and named
+# in detect/scanner.py - and it is the breakdown that decides whether a rule earns its place:
+# a rule that fires constantly in monitor mode is a rule nobody will ever dare enforce.
+output_findings = meter.create_counter(
+    OUTPUT_FINDINGS, unit="1", description="Output findings by tenant, model and rule."
 )
 
 
@@ -242,6 +284,10 @@ def histogram_views() -> list[View]:
         View(
             instrument_name=REQUEST_DURATION,
             aggregation=ExplicitBucketHistogramAggregation(UPSTREAM_BUCKETS_MS),
+        ),
+        View(
+            instrument_name=DETECT_DURATION,
+            aggregation=ExplicitBucketHistogramAggregation(DETECT_BUCKETS_MS),
         ),
     ]
 
@@ -342,6 +388,14 @@ def record_usage(record: Any) -> None:
             "tollgate.cache.similarity": record.cache_similarity,
             "tollgate.cache.cost_avoided_microcents": record.cost_avoided_microcents,
             "tollgate.cache.embedding_cost_microcents": record.embedding_cost_microcents,
+            "tollgate.detect.verdict": record.input_verdict,
+            "tollgate.detect.tier": record.input_tier,
+            "tollgate.detect.rule": record.input_rule,
+            "tollgate.detect.score": record.input_score,
+            "tollgate.detect.action": record.input_action,
+            "tollgate.output.verdict": record.output_verdict,
+            "tollgate.output.findings": record.output_findings,
+            "tollgate.output.action": record.output_action,
         }
     )
     current = facts()
@@ -353,6 +407,16 @@ def record_usage(record: Any) -> None:
     # bool(), not the raw value: a column default is applied by the database at
     # INSERT, so this attribute is still None on an unflushed row and would reach
     # the metric as the label "null" rather than "false".
+    current.detect_verdict = record.input_verdict
+    current.detect_tier = record.input_tier
+    current.detect_action = record.input_action
+    current.output_verdict = record.output_verdict
+    current.output_action = record.output_action
+    # Back into a list, from the column the ledger stores them in. One place parses it, so
+    # the metric and the row can never disagree about what was found.
+    current.output_findings = (
+        tuple((record.output_findings or "").split(",")) if (record.output_findings) else ()
+    )
     current.streamed = bool(record.streamed)
     current.attempts = record.upstream_attempts
     # A cache hit made no upstream call, so the ledger keeps NULL: there is no latency to
@@ -362,7 +426,7 @@ def record_usage(record: Any) -> None:
     # p99 look worse by making the service better.
     current.upstream_ms = 0.0 if record.cache_status in HIT_STATUSES else record.upstream_latency_ms
     current.cost_microcents = record.cost_microcents or 0
-    current.outcome = outcome_for(record.status_code, record.error_source)
+    current.outcome = outcome_for(record.status_code, record.error_source, record.error_code)
     for kind, count in (
         ("input", record.input_tokens),
         ("output", record.output_tokens),
@@ -420,6 +484,16 @@ class RequestFacts:
     cache_status: str | None = None
     cost_avoided_microcents: int = 0
     embedding_cost_microcents: int = 0
+    detect_verdict: str | None = None
+    detect_tier: str | None = None
+    detect_action: str | None = None
+    output_verdict: str | None = None
+    output_action: str | None = None
+    output_findings: tuple[str, ...] = ()
+    # Milliseconds spent inspecting input, per tier. A dict rather than one number because
+    # a request can pass through both tiers, and "what did the classifier cost" is the
+    # question the phase 7 table has to answer.
+    detect_ms: dict[str, float] = field(default_factory=dict)
     # Time waiting on the embedding model, which is provider time and not this
     # gateway's. Kept apart from `upstream_ms` because it is paid before the request
     # reaches the upstream at all - and on a cache hit, instead of reaching it.
@@ -438,7 +512,12 @@ def facts() -> RequestFacts:
     return current
 
 
-def outcome_for(status_code: int, error_source: str | None) -> str:
+# The gateway's two policy refusals, both 403. Named here because `outcome_for` turns them
+# into metric labels and the dashboard pins a colour to each.
+POLICY_REFUSALS = frozenset({"prompt_blocked", "response_blocked"})
+
+
+def outcome_for(status_code: int, error_source: str | None, error_code: str | None = None) -> str:
     """One label, low cardinality, covering every way a request can end.
 
     Derived from the status rather than from a string each call site invents, so a new
@@ -454,6 +533,18 @@ def outcome_for(status_code: int, error_source: str | None) -> str:
         # limiter working as designed, the other is a capacity problem upstream that no
         # amount of tenant configuration will fix. The exact code is on the ledger row.
         return "upstream_error"
+    if status_code == 403:
+        # The policy refusals, and the one place the error code decides an outcome rather
+        # than the status. Both directions of detection return 403 - they are the same class
+        # of refusal - but "we would not send what you asked" and "we would not deliver what
+        # the model said" are different problems, and a panel that merged them could not tell
+        # a tenant with hostile users from a tenant whose model is repeating credentials back.
+        #
+        # They are outcomes of their own rather than `gateway_error` for the same reason
+        # `rate_limited` is: a deliberate refusal in the bucket that means "something is
+        # broken" would make the first tenant switched to block mode look like an incident.
+        # A 403 with no code the gateway recognises is, by contrast, a bug - and belongs there.
+        return error_code if error_code in POLICY_REFUSALS else "gateway_error"
     return {
         401: "unauthenticated",
         402: "budget_exhausted",
@@ -509,3 +600,29 @@ def emit_request_metrics(tenant: str | None, status_code: int, total_ms: float) 
         )
     if current.embedding_cost_microcents:
         cache_embedding_spend.add(current.embedding_cost_microcents, labels)
+    if current.detect_verdict is not None:
+        # Every inspected request, clean ones included, so a flag rate has an honest
+        # denominator - and so a tier that suddenly stops flagging anything is visible as a
+        # change in the ratio rather than as the absence of a series.
+        detections.add(
+            1,
+            {
+                **labels,
+                "verdict": current.detect_verdict,
+                "tier": current.detect_tier or "none",
+                "action": current.detect_action or "none",
+            },
+        )
+    for tier, spent_ms in current.detect_ms.items():
+        detect_duration.record(spent_ms, {**labels, "tier": tier})
+    if current.output_verdict is not None:
+        output_scans.add(
+            1,
+            {
+                **labels,
+                "verdict": current.output_verdict,
+                "action": current.output_action or "none",
+            },
+        )
+    for finding in current.output_findings:
+        output_findings.add(1, {**labels, "finding": finding})

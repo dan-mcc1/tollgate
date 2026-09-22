@@ -41,6 +41,7 @@ from tollgate.auth import generate_key
 from tollgate.cache.service import build_cache
 from tollgate.config import Settings
 from tollgate.db.models import ApiKey, Tenant, UsageRecord
+from tollgate.detect.service import build_detection
 from tollgate.health import UpstreamProbe
 from tollgate.limits import BudgetGuard, MemoryRateLimiter, RateLimiter
 from tollgate.logs import JsonFormatter
@@ -154,6 +155,18 @@ def cache_settings() -> dict[str, Any]:
     ones that still passed would be the worrying part. tests/test_cache.py turns it on.
     """
     return {"cache_enabled": False}
+
+
+@pytest.fixture
+def detection_settings() -> dict[str, Any]:
+    """Settings overrides for the detector behind the gateway fixtures. Off unless asked.
+
+    Off for the same reason the cache is: most of this suite is measuring something else,
+    and a detector that refused one of its requests - or spent a millisecond inspecting
+    every one of them - would be answering a question nobody here asked.
+    tests/test_detection.py turns it on.
+    """
+    return {"detection_enabled": False}
 
 
 @pytest.fixture
@@ -332,6 +345,7 @@ async def gateway(
     rate_limiter: RateLimiter,
     budget_redis: "Redis | None",
     cache_settings: dict[str, Any],
+    detection_settings: dict[str, Any],
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A client for the gateway, wired the way lifespan wires it, but to test resources."""
     upstream = create_upstream_client(settings, transport=upstream_transport)
@@ -356,6 +370,7 @@ async def gateway(
     app.state.cache = build_cache(
         settings.model_copy(update=cache_settings), sessionmaker, upstream
     )
+    app.state.detection = build_detection(settings.model_copy(update=detection_settings))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://tollgate"
     ) as client:
@@ -372,6 +387,7 @@ async def live_gateway(
     rate_limiter: RateLimiter,
     budget_redis: "Redis | None",
     cache_settings: dict[str, Any],
+    detection_settings: dict[str, Any],
 ) -> AsyncIterator[httpx.AsyncClient]:
     """The gateway behind a real HTTP server on a loopback port.
 
@@ -402,6 +418,7 @@ async def live_gateway(
     app.state.cache = build_cache(
         settings.model_copy(update=cache_settings), sessionmaker, upstream
     )
+    app.state.detection = build_detection(settings.model_copy(update=detection_settings))
 
     async with serve(app) as url, httpx.AsyncClient(base_url=url, timeout=30) as client:
         yield client

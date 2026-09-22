@@ -12,6 +12,10 @@ venv/
 dist/
 build/
 
+# Classifier graphs: hundreds of megabytes, fetched and checksum-verified by
+# `python -m tollgate.detect.fetch`, pinned by revision and hash in detect/classifier.py.
+models/
+
 # Tooling caches
 .mypy_cache/
 .ruff_cache/

@@ -53,6 +53,9 @@ NOT_MONEY = {
     # Cosine similarity, 0 to 1. Nothing is owed in it, nothing is summed in it, and it
     # is written once from what pgvector computed rather than accumulated.
     "usage_records.cache_similarity",
+    # A classifier's probability, 0 to 1. Same reasoning: it is what a model reported about
+    # one request, written once, and nobody is ever billed in it.
+    "usage_records.input_score",
 }
 
 # Anything named like an amount. These may never be floats, exception list or not.

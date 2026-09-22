@@ -24,6 +24,7 @@ from tollgate.cli import (
     list_tenants,
     parse_usd,
     revoke_key,
+    set_detection,
     set_limits,
     set_price,
 )
@@ -115,7 +116,42 @@ async def test_tenants_lists_limits(
 
     await list_tenants(cli_session)
 
-    assert "30/min burst 60" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "30/min burst 60" in printed
+    assert "detect monitor" in printed
+
+
+async def test_set_detection_changes_the_policy(
+    cli_session: AsyncSession, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await create_tenant(cli_session, "acme")
+
+    await set_detection(cli_session, args(tenant="acme", mode="block"))
+
+    tenant = await cli_session.scalar(select(Tenant).where(Tenant.name == "acme"))
+    assert tenant is not None and tenant.detection_mode == "block"
+    assert "acme: detection block" in capsys.readouterr().out
+
+
+async def test_a_new_tenant_is_monitored_rather_than_blocked(cli_session: AsyncSession) -> None:
+    """The default arrives from the column, so a tenant created by any route gets it."""
+    await create_tenant(cli_session, "acme")
+
+    tenant = await cli_session.scalar(select(Tenant).where(Tenant.name == "acme"))
+    assert tenant is not None and tenant.detection_mode == "monitor"
+
+
+async def test_an_unknown_detection_mode_is_refused_with_the_legal_ones(
+    cli_session: AsyncSession,
+) -> None:
+    """Refused here rather than by the check constraint, so the operator is told what the
+    modes are instead of reading a Postgres error."""
+    await create_tenant(cli_session, "acme")
+
+    with pytest.raises(SystemExit) as refusal:
+        await set_detection(cli_session, args(tenant="acme", mode="paranoid"))
+
+    assert "monitor" in str(refusal.value)
 
 
 # --- keys ---------------------------------------------------------------------------------

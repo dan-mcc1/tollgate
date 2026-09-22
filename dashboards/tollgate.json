@@ -123,7 +123,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(tollgate_requests_total{tenant=~\"$tenant\", outcome=~\"rate_limited|budget_exhausted|unauthenticated|unsupported\"}[$__rate_interval])) / clamp_min(sum(rate(tollgate_requests_total{tenant=~\"$tenant\"}[$__rate_interval])), 0.0001)",
+          "expr": "sum(rate(tollgate_requests_total{tenant=~\"$tenant\", outcome=~\"rate_limited|budget_exhausted|unauthenticated|unsupported|prompt_blocked|response_blocked\"}[$__rate_interval])) / clamp_min(sum(rate(tollgate_requests_total{tenant=~\"$tenant\"}[$__rate_interval])), 0.0001)",
           "legendFormat": "refused by policy"
         }
       ],
@@ -633,6 +633,36 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "dark-yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "prompt_blocked"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "response_blocked"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "super-light-yellow"
                 }
               }
             ]
@@ -1414,6 +1444,403 @@
           ],
           "fields": "",
           "values": false
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Flag rate",
+      "description": "Requests flagged as injection attempts, as a share of every request that was inspected. Inspected is the denominator rather than all traffic, because a tenant with detection off would otherwise drag this towards zero and hide a tenant whose users are probing.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 50
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_detections_total{tenant=~\"$tenant\", verdict=\"flagged\"}[$__rate_interval])) / clamp_min(sum(rate(tollgate_detections_total{tenant=~\"$tenant\"}[$__rate_interval])), 0.0001)",
+          "legendFormat": "flag rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Blocked / min",
+      "description": "Requests actually refused, in either direction. In monitor mode - the default - this stays at zero however much is being flagged, which is the point of monitor mode.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 50
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_detections_total{tenant=~\"$tenant\", action=\"blocked\"}[$__rate_interval])) * 60 + sum(rate(tollgate_output_scans_total{tenant=~\"$tenant\", action=~\"blocked|truncated\"}[$__rate_interval])) * 60",
+          "legendFormat": "blocked / min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Inspection, p99",
+      "description": "The 99th percentile of what inspection costs, summed across the tiers. This is inside gateway overhead rather than netted off it: the gateway chose to spend it, so it is part of what the gateway costs.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 50
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(tollgate_detect_duration_milliseconds_bucket{tenant=~\"$tenant\"}[$__rate_interval])))",
+          "legendFormat": "inspection, p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Inspection failures / min",
+      "description": "Verdicts of 'error': inspection that could not run, in either direction. Detection fails open, so these requests were forwarded - which is why this needs a panel rather than a silence.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 50
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(tollgate_detections_total{tenant=~\"$tenant\", verdict=\"error\"}[$__rate_interval])) * 60 + sum(rate(tollgate_output_scans_total{tenant=~\"$tenant\", verdict=\"error\"}[$__rate_interval])) * 60",
+          "legendFormat": "inspection failures / min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "none",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Verdicts by tier",
+      "description": "What each tier concluded, per minute. The regex baseline runs first and the classifier only sees what it cleared, so the two are not comparable volumes - what matters is the shape of each: a tier that stops flagging anything has usually stopped working.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tier, verdict) (rate(tollgate_detections_total{tenant=~\"$tenant\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{tier}} {{verdict}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Inspection cost by tier",
+      "description": "Median and 99th percentile per tier. The regex baseline is tens of microseconds, the classifier is tens of milliseconds, and the output scanner scales with response length - so a rise in one of them has an obvious cause and a different fix.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le, tier) (rate(tollgate_detect_duration_milliseconds_bucket{tenant=~\"$tenant\"}[$__rate_interval])))",
+          "legendFormat": "{{tier}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le, tier) (rate(tollgate_detect_duration_milliseconds_bucket{tenant=~\"$tenant\"}[$__rate_interval])))",
+          "legendFormat": "{{tier}} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Output findings by rule",
+      "description": "What responses were carrying, per minute, by the shape that matched. tollgate_api_key and google_api_key are the two that should never appear at all: those are this gateway's own credential formats, and a hit on either is an incident rather than a statistic.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (finding) (rate(tollgate_output_findings_total{tenant=~\"$tenant\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{finding}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Responses scanned by action",
+      "description": "What was done about them. 'truncated' is a stream that was cut off part way, so the caller had already read some of it - a weaker outcome than 'blocked', and the reason the two are not one series.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (action) (rate(tollgate_output_scans_total{tenant=~\"$tenant\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     }

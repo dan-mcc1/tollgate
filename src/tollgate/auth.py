@@ -17,7 +17,7 @@ from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tollgate.db.models import ApiKey, Tenant
+from tollgate.db.models import DEFAULT_DETECTION_MODE, ApiKey, Tenant
 from tollgate.errors import GatewayError
 from tollgate.logs import tenant_var
 from tollgate.telemetry import stage
@@ -36,6 +36,11 @@ class TenantContext:
     rate_limit_rpm: int | None = None
     rate_limit_burst: int | None = None
     monthly_budget_microcents: int | None = None
+    # The tenant's detection policy: "off", "monitor" or "block". Carried for the same
+    # reason the limits are - the tenant row is already read here - so inspection costs no
+    # second query. The default matches the column's, so a context built by hand in a test
+    # behaves like a real tenant rather than like one with detection switched off.
+    detection_mode: str = DEFAULT_DETECTION_MODE
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,7 @@ async def resolve_key(session: AsyncSession, key: str) -> TenantContext | None:
             Tenant.rate_limit_rpm,
             Tenant.rate_limit_burst,
             Tenant.monthly_budget_microcents,
+            Tenant.detection_mode,
         )
         .join(Tenant, ApiKey.tenant_id == Tenant.id)
         .where(
@@ -80,7 +86,7 @@ async def resolve_key(session: AsyncSession, key: str) -> TenantContext | None:
     row = (await session.execute(stmt)).one_or_none()
     if row is None:
         return None
-    api_key_id, tenant_id, tenant_name, rpm, burst, budget = row
+    api_key_id, tenant_id, tenant_name, rpm, burst, budget, detection_mode = row
     return TenantContext(
         tenant_id=tenant_id,
         tenant_name=tenant_name,
@@ -88,6 +94,7 @@ async def resolve_key(session: AsyncSession, key: str) -> TenantContext | None:
         rate_limit_rpm=rpm,
         rate_limit_burst=burst,
         monthly_budget_microcents=budget,
+        detection_mode=detection_mode,
     )
 
 

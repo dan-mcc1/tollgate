@@ -7,6 +7,7 @@ uv run tollgate revoke-key tg_AbCdEfGh
 uv run tollgate tenants
 uv run tollgate set-limits acme --rpm 120 --burst 240
 uv run tollgate set-budget acme --usd 25
+    uv run tollgate set-detection acme --mode block
 uv run tollgate prices
 uv run tollgate set-price gemini-3.7-flash --input 0.30 --output 2.50
 uv run tollgate cache
@@ -26,6 +27,7 @@ from tollgate.auth import generate_key
 from tollgate.cache import exact
 from tollgate.config import get_settings
 from tollgate.db.models import ApiKey, ModelPrice, Tenant
+from tollgate.detect.service import MODES
 from tollgate.usage import MICROCENTS_PER_USD, format_usd
 
 
@@ -50,7 +52,8 @@ async def list_tenants(session: AsyncSession) -> None:
         cap = tenant.monthly_budget_microcents
         budget = "no budget" if cap is None else f"{format_usd(cap)}/month"
         state = "active" if tenant.is_active else "inactive"
-        print(f"{tenant.name:<24} {state:<10} {limit:<24} {budget}")
+        mode = f"detect {tenant.detection_mode}"
+        print(f"{tenant.name:<24} {state:<10} {limit:<24} {budget:<20} {mode}")
 
 
 async def set_limits(session: AsyncSession, args: argparse.Namespace) -> None:
@@ -78,6 +81,20 @@ async def set_budget(session: AsyncSession, args: argparse.Namespace) -> None:
     await session.commit()
     shown = "no budget" if cap is None else f"{format_usd(cap)} per month"
     print(f"{args.tenant}: {shown}")
+
+
+async def set_detection(session: AsyncSession, args: argparse.Namespace) -> None:
+    """Set what happens to a request this tenant's users get flagged for.
+
+    The check constraint on the column would refuse an unknown mode anyway; refusing it
+    here means the operator gets a list of the legal ones instead of a database error.
+    """
+    if args.mode not in MODES:
+        raise SystemExit(f"--mode must be one of {', '.join(sorted(MODES))}")
+    tenant = await get_tenant(session, args.tenant)
+    tenant.detection_mode = args.mode
+    await session.commit()
+    print(f"{args.tenant}: detection {args.mode}")
 
 
 async def create_key(session: AsyncSession, tenant_name: str, key_name: str) -> None:
@@ -204,6 +221,8 @@ async def run(args: argparse.Namespace) -> None:
                     await set_limits(session, args)
                 case "set-budget":
                     await set_budget(session, args)
+                case "set-detection":
+                    await set_detection(session, args)
                 case "prices":
                     await list_prices(session)
                 case "set-price":
@@ -239,6 +258,14 @@ def main() -> None:
     money.add_argument("tenant")
     money.add_argument("--usd", help="monthly spend cap in dollars, e.g. 25.00")
     money.add_argument("--unlimited", action="store_true", help="remove the cap entirely")
+    detection = commands.add_parser("set-detection")
+    detection.add_argument("tenant")
+    detection.add_argument(
+        "--mode",
+        required=True,
+        choices=sorted(MODES),
+        help="off (no inspection), monitor (record only) or block (refuse with 403)",
+    )
     commands.add_parser("prices")
     price = commands.add_parser("set-price")
     price.add_argument("model")
