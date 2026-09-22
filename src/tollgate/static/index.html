@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tollgate</title>
+<meta name="description" content="A multi-tenant gateway for model API traffic: tenant auth, rate limits, spend budgets, caching, inspection and token accounting in front of the Gemini API.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111418'/%3E%3Crect x='7' y='7' width='5' height='18' rx='1.5' fill='%23e8a33d'/%3E%3Crect x='15' y='7' width='3' height='18' rx='1.5' fill='%236b7686'/%3E%3Crect x='21' y='7' width='4' height='18' rx='1.5' fill='%236b7686'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --bg-raised: #ffffff;
+    --bg-sunken: #f2f0ec;
+    --ink: #16191d;
+    --ink-soft: #545b66;
+    --ink-faint: #7b8492;
+    --line: #e1ddd6;
+    --line-strong: #cec8be;
+    --accent: #a76b0e;
+    --accent-bg: #fdf3e0;
+    --stop: #a33a2c;
+    --stop-bg: #fceeec;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(20, 18, 14, .05), 0 6px 20px -12px rgba(20, 18, 14, .22);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1215;
+      --bg-raised: #171b20;
+      --bg-sunken: #12161a;
+      --ink: #e8eaed;
+      --ink-soft: #a6aeba;
+      --ink-faint: #79828f;
+      --line: #262c33;
+      --line-strong: #374049;
+      --accent: #e8a33d;
+      --accent-bg: #2a1f0e;
+      --stop: #e8867a;
+      --stop-bg: #2b1614;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -14px rgba(0, 0, 0, .8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1215;
+    --bg-raised: #171b20;
+    --bg-sunken: #12161a;
+    --ink: #e8eaed;
+    --ink-soft: #a6aeba;
+    --ink-faint: #79828f;
+    --line: #262c33;
+    --line-strong: #374049;
+    --accent: #e8a33d;
+    --accent-bg: #2a1f0e;
+    --stop: #e8867a;
+    --stop-bg: #2b1614;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -14px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--ink); text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--accent); }
+  code { font-family: var(--mono); font-size: .875em; }
+  h1, h2, h3 { line-height: 1.2; letter-spacing: -.02em; margin: 0; }
+
+  .wrap { width: 100%; max-width: 940px; margin: 0 auto; padding: 0 16px; }
+
+  /* header */
+  header {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 640; letter-spacing: -.01em; }
+  .gate { display: flex; align-items: flex-end; gap: 2.5px; height: 16px; }
+  .gate i { display: block; width: 3px; border-radius: 2px; background: var(--line-strong); }
+  .gate i:nth-child(1) { height: 16px; width: 4px; background: var(--accent); }
+  .gate i:nth-child(2) { height: 11px; }
+  .gate i:nth-child(3) { height: 14px; }
+  nav { display: flex; gap: 18px; font-size: .875rem; }
+  nav a { color: var(--ink-soft); text-decoration: none; }
+  nav a:hover { color: var(--ink); }
+  @media (max-width: 640px) { nav .hide-sm { display: none; } }
+
+  /* sections */
+  section { padding: 56px 0; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .75rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 12px;
+  }
+  h2 { font-size: 1.5rem; margin-bottom: 8px; }
+  .sub { color: var(--ink-soft); margin: 0 0 28px; max-width: 64ch; }
+
+  /* hero */
+  .hero { padding: 64px 0 56px; }
+  .hero h1 { font-size: clamp(2rem, 6vw, 3rem); max-width: 18ch; }
+  .lede { font-size: 1.125rem; color: var(--ink-soft); max-width: 60ch; margin: 20px 0 0; }
+  .callout {
+    margin: 28px 0 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    background: var(--bg-raised);
+    color: var(--ink-soft);
+    font-size: .9375rem;
+    max-width: 66ch;
+  }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 16px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--bg-raised);
+    font-size: .9375rem; font-weight: 520;
+    text-decoration: none;
+    box-shadow: var(--shadow);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .btn.primary:hover { opacity: .88; }
+  .btn svg { width: 15px; height: 15px; }
+
+  /* code */
+  pre {
+    margin: 0;
+    padding: 16px 18px;
+    background: var(--bg-sunken);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: .8125rem;
+    line-height: 1.7;
+  }
+  pre .c { color: var(--ink-faint); }
+  pre .k { color: var(--accent); }
+  .caption { font-size: .8125rem; color: var(--ink-faint); margin: 12px 0 0; max-width: 72ch; }
+  .caption a { color: var(--ink-soft); }
+
+  /* pipeline */
+  .pipe { display: grid; gap: 10px; }
+  .stage {
+    display: grid;
+    grid-template-columns: 26px 1fr auto;
+    gap: 14px;
+    align-items: start;
+    padding: 14px 16px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    position: relative;
+  }
+  .stage::after {
+    content: "";
+    position: absolute;
+    left: 29px; bottom: -10px; height: 10px;
+    border-left: 2px dotted var(--line-strong);
+  }
+  .stage:last-child::after { display: none; }
+  .num {
+    font-family: var(--mono); font-size: .75rem; font-weight: 600;
+    color: var(--ink-faint);
+    border: 1px solid var(--line-strong); border-radius: 6px;
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+  }
+  .stage h3 { font-size: .9375rem; font-weight: 600; }
+  .stage p { margin: 3px 0 0; font-size: .875rem; color: var(--ink-soft); }
+  .halt {
+    font-family: var(--mono); font-size: .75rem; white-space: nowrap;
+    color: var(--stop); background: var(--stop-bg);
+    border: 1px solid var(--stop); border-radius: 999px;
+    padding: 2px 9px;
+    align-self: center;
+  }
+  .halt.ok { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); }
+  @media (max-width: 560px) {
+    .stage { grid-template-columns: 26px 1fr; }
+    .halt { grid-column: 2; justify-self: start; margin-top: 8px; }
+  }
+
+  /* cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card {
+    padding: 18px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .card h3 { font-size: .9375rem; font-weight: 620; margin-bottom: 6px; }
+  .card p { margin: 0; font-size: .875rem; color: var(--ink-soft); }
+
+  /* table */
+  .scroller { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; background: var(--bg-raised); }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 600; background: var(--bg-sunken); }
+  tr:last-child td { border-bottom: 0; }
+  td.figure { font-family: var(--mono); font-size: .8125rem; color: var(--ink-soft); }
+  td.figure b { color: var(--ink); font-weight: 600; }
+
+  /* two columns */
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 32px; }
+  dl { margin: 0; }
+  dt { font-size: .875rem; font-weight: 640; margin-top: 16px; }
+  dt:first-of-type { margin-top: 0; }
+  dd { margin: 3px 0 0; font-size: .875rem; color: var(--ink-soft); }
+  ul.plain { margin: 0; padding-left: 20px; color: var(--ink-soft); max-width: 64ch; }
+  ul.plain li { margin: 6px 0; }
+
+  /* footer */
+  footer { padding: 36px 0 56px; color: var(--ink-faint); font-size: .875rem; }
+  .flinks { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 18px; }
+  .flinks a { color: var(--ink-soft); text-decoration: none; }
+  .flinks a:hover { color: var(--ink); text-decoration: underline; }
+  footer p { margin: 0; max-width: 64ch; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap bar">
+    <span class="brand"><span class="gate" aria-hidden="true"><i></i><i></i><i></i></span> tollgate</span>
+    <nav>
+      <a href="#flow">How it works</a>
+      <a href="#does" class="hide-sm">What it does</a>
+      <a href="#results">Results</a>
+      <a href="https://github.com/dan-mcc1/tollgate">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">tollgate.danmccabe.dev</p>
+    <h1>A gateway for model API traffic.</h1>
+    <p class="lede">
+      It sits between an application and a model provider. It authenticates tenants, enforces rate
+      limits and spend budgets, caches what it can, inspects traffic in both directions, and records
+      every token.
+    </p>
+    <p class="callout">
+      You have reached the gateway itself, not a product. There is nothing to sign up for: every
+      request needs a tenant key, and keys are issued from a CLI. This page explains what is behind
+      the hostname &mdash; the code, the reasoning and the measurements are all in the repository.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/dan-mcc1/tollgate">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        Source on GitHub
+      </a>
+      <a class="btn" href="https://niftypuma477.grafana.net/dashboard/snapshot/3v3pBGAjI8laSizaSMOFGKjUl99pxMvf?from=2026-09-22T02:31:22.474Z&amp;to=2026-09-22T02:51:22.474Z&amp;timezone=utc&amp;var-datasource=grafanacloud-prom&amp;var-tenant=$__all">Live dashboard snapshot</a>
+      <a class="btn" href="/readyz">Health check</a>
+    </div>
+  </div>
+</section>
+
+<section id="swap">
+  <div class="wrap">
+    <p class="eyebrow">Adoption</p>
+    <h2>One line changes.</h2>
+    <p class="sub">
+      Request and response bodies stay byte-compatible with the provider's API, so an application
+      adopts the gateway by pointing the official SDK at it. Streaming, error shapes and the SDK's
+      own retries keep working.
+    </p>
+    <pre><span class="c">from</span> google <span class="c">import</span> genai
+
+client = genai.Client(
+    api_key=<span class="k">"tg_..."</span>,  <span class="c"># a tenant key, not the provider's</span>
+    http_options={<span class="k">"base_url"</span>: <span class="k">"https://tollgate.danmccabe.dev"</span>},
+)
+print(client.models.generate_content(
+    model=<span class="k">"gemini-3.7-flash"</span>, contents=<span class="k">"Hello"</span>).text)</pre>
+    <p class="caption">
+      The provider credential lives in the gateway's environment and is never visible to a tenant.
+      The same code runs locally against a mock provider, so the repository can be cloned and used
+      without a provider key and without spending anything.
+    </p>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <p class="eyebrow">Why</p>
+    <h2>Why a gateway exists.</h2>
+    <p class="sub">
+      An application that calls a model API directly has no good answer to a handful of questions:
+    </p>
+    <ul class="plain">
+      <li>Which customer spent what, this month, on which model?</li>
+      <li>What happens when one of them gets stuck in a retry loop?</li>
+      <li>Did a user smuggle instructions into a prompt?</li>
+      <li>Did a response leak a credential or personal data?</li>
+    </ul>
+    <p class="sub" style="margin: 20px 0 0;">
+      Once more than one team, customer or feature calls the API, each call site reimplements the
+      same rules, and spread across services those rules drift apart. A gateway puts them in one
+      place on the request path, and it is the only component that sees every token in both
+      directions.
+    </p>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <p class="eyebrow">Request path</p>
+    <h2>How a request flows.</h2>
+    <p class="sub">
+      Six stages between the client and the provider. Every one of them can end the request, and the
+      chip on the right says how.
+    </p>
+    <div class="pipe">
+      <div class="stage">
+        <span class="num">1</span>
+        <div>
+          <h3>Authenticate the tenant</h3>
+          <p>The key is hashed and looked up. The tenant it resolves to is the only one this request can ever read or spend against.</p>
+        </div>
+        <span class="halt">401</span>
+      </div>
+      <div class="stage">
+        <span class="num">2</span>
+        <div>
+          <h3>Rate limit and budget</h3>
+          <p>A per-tenant token bucket in Redis, and month-to-date spend against a budget reserved before the call, then reconciled after it. Rate limits fail open; budgets do not.</p>
+        </div>
+        <span class="halt">429 &middot; 402</span>
+      </div>
+      <div class="stage">
+        <span class="num">3</span>
+        <div>
+          <h3>Inspect the input</h3>
+          <p>A regex baseline, then a pinned ONNX classifier looking for prompt injection. Off, monitor or block, per tenant; monitor by default.</p>
+        </div>
+        <span class="halt">403</span>
+      </div>
+      <div class="stage">
+        <span class="num">4</span>
+        <div>
+          <h3>Look in the cache</h3>
+          <p>A versioned hash over the normalised request, scoped per tenant, with an optional pgvector similarity tier. A hit is replayed as a real event stream.</p>
+        </div>
+        <span class="halt ok">200, no spend</span>
+      </div>
+      <div class="stage">
+        <span class="num">5</span>
+        <div>
+          <h3>Call the provider</h3>
+          <p>The tenant's key is removed and the provider's attached. Responses are relayed event by event and never buffered.</p>
+        </div>
+        <span class="halt">upstream error</span>
+      </div>
+      <div class="stage">
+        <span class="num">6</span>
+        <div>
+          <h3>Scan the output, record the usage</h3>
+          <p>Credential and PII scanning with a hold-back window, then an append-only ledger row priced in integer micro-cents.</p>
+        </div>
+        <span class="halt">403</span>
+      </div>
+    </div>
+    <p class="caption">
+      The return path is the hard part: output scanning wants a complete response, and streaming
+      never provides one. A hold-back window contains a leak on a stream rather than noticing one
+      after it has gone out.
+    </p>
+  </div>
+</section>
+
+<section id="does">
+  <div class="wrap">
+    <p class="eyebrow">Capabilities</p>
+    <h2>What it does.</h2>
+    <p class="sub">
+      Each of these works the way it does for a reason, and the reasons are written up in the
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/design.md">design notes</a>.
+    </p>
+    <div class="cards">
+      <div class="card">
+        <h3>Passthrough, streamed and not</h3>
+        <p>Server-sent events are relayed event by event, with usage parsed out of the stream, so accounting survives a client hanging up mid-response or an upstream failing after a 200 has already gone out.</p>
+      </div>
+      <div class="card">
+        <h3>Tenant auth</h3>
+        <p>Keys stored only as SHA-256 hashes, revocable, several live per tenant. The provider credential stays in the gateway and never reaches a caller.</p>
+      </div>
+      <div class="card">
+        <h3>Rate limits and spend budgets</h3>
+        <p>Token buckets in Redis, a versioned price table, money in integer micro-cents, and a budget reserved before the upstream call then reconciled when the stream ends.</p>
+      </div>
+      <div class="card">
+        <h3>Two-tier cache</h3>
+        <p>An exact hash over the normalised request, scoped per tenant, plus an optional pgvector similarity tier. Cached responses are replayed as real event streams.</p>
+      </div>
+      <div class="card">
+        <h3>Detection both ways</h3>
+        <p>Injection detection on the way in; credential and PII scanning on the way back, with a hold-back window on streams. Off, monitor or block, per tenant.</p>
+      </div>
+      <div class="card">
+        <h3>Observability</h3>
+        <p>One OpenTelemetry trace per request, with the upstream call as its own span, so the gateway's own overhead separates from the provider's latency. No prompt or response text reaches a span, a metric label or a log line, and a test enforces it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <p class="eyebrow">Measurements</p>
+    <h2>Results.</h2>
+    <p class="sub">
+      Every figure is produced by a script in the repository, and the runs that came out badly are
+      published beside the ones that did not.
+    </p>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th scope="col">Measurement</th><th scope="col">Result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Gateway overhead</td><td class="figure"><b>+10.4 ms</b> p50 sequential; <b>12.0 ms</b> mean, flat to 60 requests a second</td></tr>
+          <tr><td>Added time to first token, streamed</td><td class="figure"><b>+5.2 ms</b> p50</td></tr>
+          <tr><td>Rate limit accuracy across containers</td><td class="figure">in-process drifts to <b>+388%</b> at 5 tasks; Redis <b>0%</b> at any count</td></tr>
+          <tr><td>Cache hit rate and spend avoided</td><td class="figure"><b>61.5&ndash;89.2%</b> exact, saving <b>59&ndash;96%</b> of upstream spend</td></tr>
+          <tr><td>Semantic cache threshold</td><td class="figure"><b>no safe threshold exists</b> for the production embedding model, so the tier ships off</td></tr>
+          <tr><td>Injection detection</td><td class="figure"><b>0.666</b> recall at <b>0.938</b> precision, against <b>0.374</b> at <b>0.908</b> for the regex baseline</td></tr>
+          <tr><td>Deploy time, merge to live</td><td class="figure"><b>~5 min</b>, with automatic rollback on a failed smoke test</td></tr>
+          <tr><td>Infrastructure cost</td><td class="figure"><b>~$37/month</b> running continuously</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">
+      The benchmark refuses to produce a row it cannot measure honestly: a gateway without the
+      semantic tier or the classifier enabled gets a named skip rather than a number measured with
+      the feature switched off.
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/results.md">The full table, and the method behind each number.</a>
+    </p>
+  </div>
+</section>
+
+<section id="stack">
+  <div class="wrap">
+    <p class="eyebrow">Deployment</p>
+    <h2>What this hostname is.</h2>
+    <p class="sub">
+      An ECS Fargate task behind an application load balancer, deployed from <code>main</code> by
+      GitHub Actions, on infrastructure declared in Terraform.
+    </p>
+    <div class="split">
+      <div>
+        <dl>
+          <dt>On the request path</dt>
+          <dd>Python 3.13, FastAPI and uvicorn, httpx to the provider. 0.25 vCPU and 512 MB, running non-root on a read-only filesystem.</dd>
+          <dt>State</dt>
+          <dd>Postgres 17 with pgvector for tenants, keys, prices, the ledger and cache entries. Redis for buckets, spend counters and reservations, all with a TTL.</dd>
+          <dt>Secrets</dt>
+          <dd>The database URL and the provider key come from Secrets Manager. The pipeline authenticates with OIDC and stores no keys.</dd>
+        </dl>
+      </div>
+      <div>
+        <dl>
+          <dt>Build and ship</dt>
+          <dd>Lint, types and tests, then an image built and deployed by digest, migrations run with the exact code being deployed, a smoke test, and a rollback if it fails.</dd>
+          <dt>Observe</dt>
+          <dd>OTLP traces and Prometheus metrics to Grafana Cloud, one trace per request, with the dashboard and its alert declared in Terraform.</dd>
+          <dt>Trust boundaries</dt>
+          <dd>Who trusts what, and what happens when each piece is compromised, is written up in the <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/threat-model.md">threat model</a>.</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="flinks">
+      <a href="https://github.com/dan-mcc1/tollgate">Repository</a>
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/design.md">Design notes</a>
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/results.md">Results in full</a>
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/threat-model.md">Threat model</a>
+      <a href="https://github.com/dan-mcc1/tollgate/blob/main/docs/operations.md">Operations</a>
+    </div>
+    <p>Built by Dan McCabe. The gateway serving this page is the one the page describes.</p>
+  </div>
+</footer>
+
+</body>
+</html>

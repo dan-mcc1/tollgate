@@ -2,9 +2,11 @@ import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request, Response
+from fastapi.responses import HTMLResponse
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -73,6 +75,25 @@ app.include_router(health_router)
 
 
 VALID_MONTH = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+# Read once, at import. It is a few kilobytes that cannot change while the process lives,
+# and reading it here means a broken build fails at startup rather than on the first
+# visitor - which matters because the filesystem is read-only in production.
+LANDING_PAGE = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/", include_in_schema=False)
+async def landing() -> Response:
+    """What this hostname is, for whoever opens it in a browser.
+
+    Every other route wants a tenant key, so without this the root of a public load
+    balancer answers a person with a 401 and nothing to read. Static bytes and nothing
+    else: no tenant, no database, no per-request work, and nothing here that a caller
+    could not already learn from the public repository.
+    """
+    # Short enough that a deploy's copy is live within minutes, long enough that a
+    # refresh doesn't come back through the balancer.
+    return HTMLResponse(LANDING_PAGE, headers={"Cache-Control": "public, max-age=300"})
 
 
 @app.get("/metrics", include_in_schema=False)

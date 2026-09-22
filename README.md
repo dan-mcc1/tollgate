@@ -7,7 +7,8 @@ inspects traffic in both directions, and records every token.
 Request and response bodies stay byte-compatible with the provider's API, so an existing
 application adopts Tollgate by changing one base URL, and the official SDK keeps working.
 
-> Live at `https://tollgate.danmccabe.dev`, deployed from `main` by GitHub Actions.
+> Live at `https://tollgate.danmccabe.dev`, deployed from `main` by GitHub Actions. The root of
+> that host serves a page explaining what it is; everything else there wants a tenant key.
 
 ## Why a gateway exists
 
@@ -220,7 +221,8 @@ src/tollgate/
 ├── proxy/             passthrough.py (unary), streaming.py (SSE relay)
 ├── cache/             normalisation, lookup and store, stream replay, vector search
 ├── detect/            regex baseline, ONNX classifier, output scanner, policy
-└── db/models.py       SQLAlchemy models
+├── db/models.py       SQLAlchemy models
+└── static/index.html  the page served at the root of the deployed host
 migrations/            Alembic environment and versions
 mock_upstream/         fake Gemini API: SSE, usage, scripted faults
 tests/                 unit and integration tests, no network
@@ -240,4 +242,5 @@ postgres/              init SQL for the local database
 - **Training a classifier.** A published model is integrated and measured.
 - **Signup, onboarding or billing.**
 - **Kubernetes.** Fargate and Terraform cover the deployment story.
-- **A frontend.**
+- **A frontend.** One static page at the root says what the host is; nothing on it is
+  generated, authenticated or wired to any of the gateway's state.

@@ -77,3 +77,9 @@ jobs:
       - uses: actions/checkout@v7
       # Catch a broken Dockerfile in the pull request, not during a deploy.
       - run: docker build --pull --provenance=false --sbom=false -t tollgate:ci .
+
+      # Importing the app inside the image needs nothing running, and it reads the landing
+      # page off the installed package - so a wheel that stopped carrying static/index.html
+      # fails here rather than as a crash loop on deploy.
+      - name: The installed package imports and carries its static files
+        run: docker run --rm tollgate:ci python -c "import tollgate.main"

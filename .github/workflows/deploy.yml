@@ -188,6 +188,12 @@ jobs:
           jq -e '.error.source == "gateway" and .error.code == "missing_api_key"' unauth.json > /dev/null \
             || fail "unexpected 401 body: $(cat unauth.json)"
 
+          # 4. The page at the root still renders. It is the only thing here a person reads,
+          #    and it is served from the image, so a packaging change can lose it silently.
+          page=$(curl -sS -m 10 -o landing.html -w '%{http_code}' "$PUBLIC_URL/" || true)
+          [ "$page" = "200" ] || fail "GET / returned $page, expected 200"
+          grep -q '<title>Tollgate</title>' landing.html || fail "GET / did not return the landing page"
+
           echo "Smoke test passed: $GITHUB_SHA is live and healthy."
 
       # --- 7. Roll back on smoke test failure -----------------------------------------------
