@@ -18,6 +18,46 @@ team, customer or feature calls the API, each call site reimplements the same ru
 across services those rules drift apart. A gateway puts them in one place on the request path, and
 it is the only component that sees every token in both directions.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    C["<b>Client application</b><br/><sub>official SDK, base_url swapped</sub>"]
+
+    subgraph aws["AWS"]
+        ALB["<b>Application Load Balancer</b><br/><sub>HTTPS · ACM cert · health check GET /readyz</sub>"]
+
+        TG["<b>Tollgate API</b><br/><sub>Fargate · 0.25 vCPU / 512 MB · non-root, read-only filesystem</sub><br/><br/>Authenticate → Rate limit + budget → Inspect input<br/>→ Cache → Proxy → Scan output + record"]
+        SEC["<b>Secrets Manager</b><br/><sub>DATABASE_URL · GEMINI_API_KEY</sub>"]
+    end
+
+    PG[("<b>Postgres 17 + pgvector</b><br/><sub>Neon</sub><br/><sub>tenants · keys · prices</sub><br/><sub>ledger · cache entries</sub>")]
+    RS[("<b>Redis</b><br/><sub>Upstash</sub><br/><sub>buckets · spend counters</sub><br/><sub>reservations · all TTL'd</sub>")]
+    MP["<b>Model provider</b><br/><sub>Gemini API, or the local mock</sub>"]
+
+    C -->|"x-goog-api-key: tg_..."| ALB
+    ALB --> TG
+    TG -.->|"response, streamed"| C
+
+    TG --- PG
+    TG --- RS
+    TG <-->|"tenant key removed, provider key attached"| MP
+    TG -.- SEC
+
+    subgraph ops["Build and observe"]
+        GHA["<b>GitHub Actions</b><br/><sub>OIDC, no stored keys · test, build,<br/>migrate, deploy, smoke test, roll back</sub>"]
+        TF["<b>Terraform</b><br/><sub>bootstrap · main · grafana</sub>"]
+        GRAF["<b>Grafana Cloud</b><br/><sub>OTLP traces · Prometheus metrics</sub>"]
+    end
+
+    GHA ==>|"deploy by digest"| TG
+    TF ==>|"declares"| aws
+    TG ==>|"one trace per request"| GRAF
+```
+
+Who trusts what, and what happens when each piece is compromised, is in
+**[docs/threat-model.md](docs/threat-model.md)**.
+
 ## How a request flows
 
 ```mermaid
@@ -37,8 +77,9 @@ flowchart TD
     S -. "response, streamed" .-> C
 ```
 
-The return path is the hard part. Output scanning wants a complete response, and streaming never
-provides one.
+Every stage can end the request: 401 for an unknown or revoked key, 429 over the rate limit, 402
+over budget, 403 for a prompt or a response that policy refused. The return path is the hard part —
+output scanning wants a complete response, and streaming never provides one.
 
 ## What it does
 

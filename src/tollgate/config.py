@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     budget_month_ttl_s: float = 40 * 24 * 60 * 60
 
     # Caching. Entries are always scoped to one tenant; there is no setting for sharing
-    # them, because there is no safe value for it. See the threat model in the README.
+    # them, because there is no safe value for it. See docs/threat-model.md.
     cache_enabled: bool = True
     cache_ttl_s: float = 24 * 60 * 60
     # The highest temperature a request may name and still be cached. Above it the

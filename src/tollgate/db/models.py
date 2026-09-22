@@ -262,7 +262,7 @@ class CacheEntry(Base):
     **Scoped to one tenant, twice over.** `tenant_id` is a column, so the lookup filters
     on it, and it is also inside the hash, so the keys of two tenants asking the same
     question do not collide even if a query one day forgets the filter. See
-    cache/keys.py and the threat model in the README.
+    cache/keys.py and docs/threat-model.md.
     """
 
     __tablename__ = "cache_entries"

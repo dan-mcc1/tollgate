@@ -110,7 +110,7 @@ finished with `STOP`: a `SAFETY` or `RECITATION` stop is a policy decision the p
 and freezing one into a cache is how a product acquires a refusal nobody can explain or clear.
 
 **Why entries are scoped per tenant, and why that is not configurable.** Sharing across tenants
-would raise the hit rate considerably, and the threat model is the reason it is refused rather than
+would raise the hit rate considerably, and the [threat model](threat-model.md) is the reason it is refused rather than
 made opt-in. A shared cache gives one tenant a timing oracle over another's traffic: a hit returns
 in 14.6 ms and a miss in 122.5 ms, so anyone able to send a request can learn whether some other
 customer has recently asked a given question. That is enough to confirm a guess about a

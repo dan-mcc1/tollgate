@@ -23,7 +23,7 @@ order for the same reason - the order tool declarations are given in is part of 
 prompt, and sorting `tools` would let two genuinely different requests share an entry.
 
 **The tenant is inside the hash, not only in the query.** Entries are scoped per tenant
-(see the threat model in the README), which the `WHERE tenant_id = ?` on the lookup
+(see docs/threat-model.md), which the `WHERE tenant_id = ?` on the lookup
 already enforces. Putting the tenant id in the hashed material as well means a wrong
 predicate, a mistyped join or a future query that forgets the scope still cannot produce
 a cross-tenant hit: the keys simply do not collide. It costs nothing and removes a whole
